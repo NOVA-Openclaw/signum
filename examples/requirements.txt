@@ -1,0 +1,2 @@
+nostr==0.0.2
+websockets>=16.0

@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Signum — Sign a Nostr Petition</title>
+  <style>
+    :root {
+      --bg: #0b0b0f;
+      --bg-elevated: #13131a;
+      --bg-card: #1a1a24;
+      --border: #2a2a3a;
+      --text: #e8e8f0;
+      --text-muted: #9ca3af;
+      --violet: #8b5cf6;
+      --violet-bright: #a78bfa;
+      --teal: #14b8a6;
+      --teal-bright: #2dd4bf;
+      --red: #f43f5e;
+      --green: #22c55e;
+      --yellow: #f59e0b;
+      --radius: 12px;
+      --shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+      min-height: 100vh;
+    }
+
+    header {
+      text-align: center;
+      padding: 48px 20px 32px;
+      background: radial-gradient(ellipse at 50% 0%, rgba(139, 92, 246, 0.15), transparent 60%);
+    }
+
+    .logo {
+      font-size: 2.25rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      background: linear-gradient(90deg, var(--violet-bright), var(--teal-bright));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      margin: 0 0 8px;
+    }
+
+    .tagline {
+      color: var(--text-muted);
+      margin: 0;
+      font-size: 1rem;
+    }
+
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 0 20px 64px;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: var(--shadow);
+    }
+
+    .card h2 {
+      margin: 0 0 16px;
+      font-size: 1.1rem;
+      color: var(--violet-bright);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+
+    .status.ok { background: rgba(34, 197, 94, 0.12); color: var(--green); }
+    .status.warn { background: rgba(245, 158, 11, 0.12); color: var(--yellow); }
+    .status.bad { background: rgba(244, 63, 94, 0.12); color: var(--red); }
+
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+
+    label {
+      display: block;
+      margin: 16px 0 6px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    input[type="text"],
+    input[type="url"],
+    select,
+    textarea {
+      width: 100%;
+      padding: 12px 14px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--violet);
+      box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.18);
+    }
+
+    textarea { min-height: 120px; resize: vertical; font-family: inherit; }
+
+    .hint {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .row {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: 1fr;
+    }
+
+    @media (min-width: 560px) {
+      .row.two { grid-template-columns: 1fr 1fr; }
+    }
+
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 20px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      transition: transform 0.08s, opacity 0.15s;
+    }
+
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-primary {
+      background: linear-gradient(90deg, var(--violet), var(--teal));
+      color: #fff;
+    }
+
+    .btn-secondary {
+      background: var(--bg-elevated);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 20px;
+    }
+
+    .notice {
+      border-left: 4px solid var(--red);
+      background: rgba(244, 63, 94, 0.08);
+      padding: 16px;
+      border-radius: 0 8px 8px 0;
+      margin: 20px 0;
+    }
+
+    .notice strong {
+      color: var(--red);
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .hidden { display: none !important; }
+
+    .petition-preview {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-top: 16px;
+    }
+
+    .petition-preview h3 {
+      margin: 0 0 8px;
+      font-size: 1.05rem;
+      color: var(--text);
+    }
+
+    .petition-preview .meta {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      word-break: break-all;
+    }
+
+    .petition-preview .excerpt {
+      margin-top: 12px;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      white-space: pre-wrap;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .hash {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      font-size: 0.8rem;
+      color: var(--teal-bright);
+      word-break: break-all;
+    }
+
+    .relay-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .relay-list li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+
+    .relay-list li:last-child { border-bottom: none; }
+
+    .relay-state {
+      margin-left: auto;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .relay-state.ok { color: var(--green); }
+    .relay-state.fail { color: var(--red); }
+    .relay-state.pending { color: var(--yellow); }
+
+    .result {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-top: 16px;
+    }
+
+    .result code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      font-size: 0.8rem;
+      word-break: break-all;
+      color: var(--teal-bright);
+    }
+
+    .muted { color: var(--text-muted); }
+
+    a { color: var(--violet-bright); }
+    a:hover { color: var(--teal-bright); }
+
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,0.2);
+      border-top-color: var(--violet-bright);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .extension-links {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    .extension-links a {
+      display: inline-block;
+      padding: 8px 14px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 class="logo">Signum</h1>
+    <p class="tagline">Sign Nostr petitions with your NIP-07 browser extension.</p>
+  </header>
+
+  <main>
+    <section class="card" id="extension-card">
+      <h2>
+        <span>NIP-07 Extension</span>
+        <span class="status bad" id="ext-status"><span class="dot"></span>Not detected</span>
+      </h2>
+      <p class="muted" id="ext-message">
+        This form needs a Nostr browser extension to access your key and sign events.
+        It never asks for your <code>nsec</code>.
+      </p>
+      <div class="extension-links" id="ext-links">
+        <a href="https://getalby.com/" target="_blank" rel="noopener">Get Alby</a>
+        <a href="https://nos2x.com/" target="_blank" rel="noopener">Get nos2x</a>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>1. Petition</h2>
+      <label for="a-tag">Petition <code>a</code> tag</label>
+      <input type="text" id="a-tag" placeholder="30023:<sponsor_pubkey>:<petition_slug>" />
+      <p class="hint">Format: <code>30023:&lt;sponsor_pubkey&gt;:&lt;d-tag&gt;</code></p>
+
+      <label for="relay-hint">Relay hint for petition reference (optional)</label>
+      <input type="url" id="relay-hint" placeholder="wss://relay.example.com" />
+      <p class="hint">Added as the third value of the signature event’s <code>a</code> tag.</p>
+
+      <div class="actions">
+        <button class="btn-primary" id="fetch-btn" disabled>
+          <span id="fetch-spinner" class="spinner hidden"></span>
+          <span id="fetch-label">Fetch petition from relays</span>
+        </button>
+        <button class="btn-secondary" id="reset-btn">Reset</button>
+      </div>
+
+      <div class="petition-preview hidden" id="petition-preview">
+        <h3 id="preview-title">Petition title</h3>
+        <div class="meta">
+          <div>d-tag: <code id="preview-dtag"></code></div>
+          <div>Sponsor: <code id="preview-sponsor"></code></div>
+          <div>Content hash: <code class="hash" id="preview-hash"></code></div>
+        </div>
+        <div class="excerpt" id="preview-excerpt"></div>
+      </div>
+    </section>
+
+    <section class="card hidden" id="signer-card">
+      <h2>2. Your signature</h2>
+
+      <div class="row two">
+        <div>
+          <label for="entity-type">Entity type</label>
+          <select id="entity-type">
+            <option value="human">human</option>
+            <option value="ai_agent">ai_agent</option>
+            <option value="hybrid">hybrid</option>
+            <option value="collective">collective</option>
+            <option value="organization">organization</option>
+            <option value="uncertain">uncertain</option>
+          </select>
+        </div>
+        <div>
+          <label for="short-statement">Short statement (optional)</label>
+          <input type="text" id="short-statement" maxlength="140" placeholder="One-line annotation" />
+        </div>
+      </div>
+
+      <label for="content-statement">Longer personal statement (goes in event content)</label>
+      <textarea id="content-statement" placeholder="Optional longer statement in Markdown."></textarea>
+
+      <div class="notice">
+        <strong>Signature permanence</strong>
+        Your signature is a permanent, cryptographically verifiable public record on Nostr.
+        Revocation is possible but does not erase the historical record.
+      </div>
+
+      <label for="relay-set">Publish relays (one per line)</label>
+      <textarea id="relay-set" rows="4"></textarea>
+
+      <div class="actions">
+        <button class="btn-primary" id="sign-btn" disabled>Sign &amp; publish</button>
+      </div>
+
+      <div class="result hidden" id="result-box">
+        <div id="result-summary"></div>
+        <ul class="relay-list" id="relay-results"></ul>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { getEventHash } from 'https://esm.sh/nostr-tools@2.12.0';
+
+    const DEFAULT_RELAYS = [
+      'wss://relay.damus.io',
+      'wss://nos.lol',
+      'wss://relay.nostr.band'
+    ];
+
+    const CLIENT_TAG = ['client', 'signum-web', 'https://github.com/NOVA-Openclaw/signum'];
+
+    const state = {
+      nostr: null,
+      pubkey: null,
+      petitionEvent: null,
+      contentHash: null,
+      aTag: null
+    };
+
+    const $ = id => document.getElementById(id);
+
+    function setStatus(id, cls, text) {
+      const el = $(id);
+      el.className = `status ${cls}`;
+      el.innerHTML = `<span class="dot"></span>${text}`;
+    }
+
+    function bytesToHex(bytes) {
+      return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function sha256Hex(text) {
+      const data = new TextEncoder().encode(text);
+      const hash = await crypto.subtle.digest('SHA-256', data);
+      return bytesToHex(new Uint8Array(hash));
+    }
+
+    function parseATag(aTag) {
+      const parts = aTag.trim().split(':');
+      if (parts.length < 3) return null;
+      const [kind, pubkey, ...rest] = parts;
+      const dTag = rest.join(':');
+      if (kind !== '30023') return null;
+      if (!/^[0-9a-fA-F]{64}$/.test(pubkey)) return null;
+      if (!dTag) return null;
+      return { kind, pubkey, dTag };
+    }
+
+    function normalizeRelay(url) {
+      url = url.trim();
+      if (!url) return null;
+      if (!/^wss?:\/\//i.test(url)) url = 'wss://' + url;
+      return url;
+    }
+
+    function getRelaysFromInput() {
+      return $('relay-set').value
+        .split('\n')
+        .map(normalizeRelay)
+        .filter(Boolean);
+    }
+
+    function updateExtensionUI() {
+      if (state.nostr) {
+        setStatus('ext-status', 'ok', 'Extension connected');
+        $('ext-message').textContent = `Connected pubkey: ${state.pubkey || '...'}`;
+        $('ext-links').classList.add('hidden');
+        $('fetch-btn').disabled = false;
+        $('sign-btn').disabled = false;
+      } else {
+        setStatus('ext-status', 'bad', 'Not detected');
+        $('ext-message').innerHTML =
+          'This form needs a Nostr browser extension to access your key and sign events. It never asks for your <code>nsec</code>.';
+        $('ext-links').classList.remove('hidden');
+        $('fetch-btn').disabled = true;
+        $('sign-btn').disabled = true;
+      }
+    }
+
+    async function initExtension() {
+      if (typeof window.nostr !== 'undefined') {
+        state.nostr = window.nostr;
+        try {
+          state.pubkey = await window.nostr.getPublicKey();
+        } catch (e) {
+          console.warn('Could not retrieve pubkey:', e);
+        }
+      }
+      updateExtensionUI();
+    }
+
+    window.addEventListener('nostrLoaded', initExtension);
+    document.addEventListener('DOMContentLoaded', initExtension);
+
+    $('relay-set').value = DEFAULT_RELAYS.join('\n');
+
+    function timeout(ms, msg) {
+      return new Promise((_, reject) => setTimeout(() => reject(new Error(msg)), ms));
+    }
+
+    function fetchPetitionFromRelay(relayUrl, filter) {
+      return new Promise((resolve, reject) => {
+        const ws = new WebSocket(relayUrl);
+        const subId = 'signum-' + Math.random().toString(36).slice(2, 10);
+        let settled = false;
+        let timer = null;
+
+        function cleanup() {
+          if (timer) clearTimeout(timer);
+          try { ws.close(); } catch {}
+        }
+
+        function finish(err, event) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          if (event) resolve(event);
+          else reject(err || new Error('No petition event'));
+        }
+
+        timer = setTimeout(() => finish(new Error('Timeout')), 12000);
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify(['REQ', subId, filter]));
+        };
+
+        ws.onmessage = msg => {
+          let data;
+          try { data = JSON.parse(msg.data); } catch { return; }
+          if (!Array.isArray(data)) return;
+          const [type, id, payload] = data;
+          if (id !== subId) return;
+          if (type === 'EVENT' && payload && payload.kind === 30023) {
+            finish(null, payload);
+          } else if (type === 'EOSE') {
+            finish(new Error('No petition event found'));
+          }
+        };
+
+        ws.onerror = () => finish(new Error('WebSocket error'));
+        ws.onclose = () => finish(new Error('Connection closed'));
+      });
+    }
+
+    async function fetchPetition() {
+      const aTag = $('a-tag').value.trim();
+      const parsed = parseATag(aTag);
+      if (!parsed) {
+        alert('Invalid a-tag. Use format: 30023:<sponsor_pubkey>:<d-tag>');
+        return;
+      }
+      state.aTag = aTag;
+
+      const relayUrls = getRelaysFromInput();
+      if (relayUrls.length === 0) {
+        alert('Please configure at least one relay.');
+        return;
+      }
+
+      $('fetch-spinner').classList.remove('hidden');
+      $('fetch-label').textContent = 'Fetching…';
+      $('fetch-btn').disabled = true;
+
+      const filter = {
+        kinds: [30023],
+        authors: [parsed.pubkey],
+        '#d': [parsed.dTag]
+      };
+
+      try {
+        const promises = relayUrls.map(url => fetchPetitionFromRelay(url, filter));
+        const result = await Promise.any(promises);
+
+        state.petitionEvent = result;
+        state.contentHash = await sha256Hex(result.content);
+
+        $('preview-title').textContent = (result.tags.find(t => t[0] === 'title')?.[1]) || 'Untitled petition';
+        $('preview-dtag').textContent = parsed.dTag;
+        $('preview-sponsor').textContent = parsed.pubkey;
+        $('preview-hash').textContent = state.contentHash;
+        $('preview-excerpt').textContent = result.content.slice(0, 1200) + (result.content.length > 1200 ? '\n\n…' : '');
+        $('petition-preview').classList.remove('hidden');
+        $('signer-card').classList.remove('hidden');
+      } catch (err) {
+        const detail = err.errors ? err.errors[0]?.message : err.message;
+        alert('Could not fetch petition: ' + (detail || err.message));
+      } finally {
+        $('fetch-spinner').classList.add('hidden');
+        $('fetch-label').textContent = 'Fetch petition from relays';
+        $('fetch-btn').disabled = !state.nostr;
+      }
+    }
+
+    function buildSignatureEvent() {
+      const parsed = parseATag(state.aTag);
+      const relayHint = normalizeRelay($('relay-hint').value);
+      const entityType = $('entity-type').value;
+      const shortStatement = $('short-statement').value.trim();
+      const content = $('content-statement').value.trim();
+
+      const aTag = relayHint
+        ? ['a', state.aTag, relayHint]
+        : ['a', state.aTag];
+
+      const tags = [
+        aTag,
+        ['content_hash', state.contentHash],
+        ['entity_type', entityType],
+        CLIENT_TAG
+      ];
+
+      if (shortStatement) {
+        tags.push(['statement', shortStatement]);
+      }
+
+      return {
+        kind: 1791,
+        created_at: Math.floor(Date.now() / 1000),
+        tags,
+        content
+      };
+    }
+
+    function publishToRelay(relayUrl, event) {
+      return new Promise((resolve, reject) => {
+        const ws = new WebSocket(relayUrl);
+        let timer = null;
+        let settled = false;
+
+        function cleanup() {
+          if (timer) clearTimeout(timer);
+          try { ws.close(); } catch {}
+        }
+
+        function finish(err) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          if (err) reject(err);
+          else resolve();
+        }
+
+        timer = setTimeout(() => finish(new Error('Timeout')), 15000);
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify(['EVENT', event]));
+        };
+
+        ws.onmessage = msg => {
+          let data;
+          try { data = JSON.parse(msg.data); } catch { return; }
+          if (!Array.isArray(data)) return;
+          const [type, , flag, reason] = data;
+          if (type === 'OK') {
+            if (flag === true) finish();
+            else finish(new Error(reason || 'Relay rejected event'));
+          }
+        };
+
+        ws.onerror = () => finish(new Error('WebSocket error'));
+        ws.onclose = () => finish(new Error('Connection closed'));
+      });
+    }
+
+    async function signAndPublish() {
+      if (!state.petitionEvent || !state.contentHash) {
+        alert('Fetch a petition first.');
+        return;
+      }
+      if (!state.nostr) {
+        alert('NIP-07 extension not available.');
+        return;
+      }
+
+      const relayUrls = getRelaysFromInput();
+      if (relayUrls.length === 0) {
+        alert('Please configure at least one relay.');
+        return;
+      }
+
+      $('sign-btn').disabled = true;
+      $('sign-btn').textContent = 'Signing…';
+      $('result-box').classList.add('hidden');
+
+      try {
+        const event = buildSignatureEvent();
+        const signed = await state.nostr.signEvent(event);
+
+        if (!signed.id || !signed.sig || !signed.pubkey) {
+          throw new Error('Extension returned an incomplete event.');
+        }
+
+        const expectedId = getEventHash(signed);
+        if (signed.id !== expectedId) {
+          throw new Error('Event ID mismatch after signing.');
+        }
+
+        $('result-summary').innerHTML = `
+          <strong>Event signed.</strong><br>
+          ID: <code>${signed.id}</code><br>
+          <a href="https://nostr.at/${signed.id}" target="_blank" rel="noopener">View on nostr.at</a>
+        `;
+
+        const list = $('relay-results');
+        list.innerHTML = '';
+        $('result-box').classList.remove('hidden');
+
+        const statuses = new Map();
+        relayUrls.forEach(url => {
+          const li = document.createElement('li');
+          li.id = 'relay-' + btoa(url).replace(/[^a-zA-Z0-9]/g, '');
+          li.innerHTML = `<span>${url}</span><span class="relay-state pending">Pending</span>`;
+          list.appendChild(li);
+          statuses.set(url, li);
+        });
+
+        await Promise.allSettled(relayUrls.map(async url => {
+          const li = statuses.get(url);
+          const badge = li.querySelector('.relay-state');
+          try {
+            await publishToRelay(url, signed);
+            badge.textContent = 'OK';
+            badge.className = 'relay-state ok';
+          } catch (err) {
+            badge.textContent = err.message || 'Failed';
+            badge.className = 'relay-state fail';
+          }
+        }));
+      } catch (err) {
+        alert('Signing failed: ' + err.message);
+      } finally {
+        $('sign-btn').disabled = false;
+        $('sign-btn').textContent = 'Sign & publish';
+      }
+    }
+
+    $('fetch-btn').addEventListener('click', fetchPetition);
+    $('sign-btn').addEventListener('click', signAndPublish);
+    $('reset-btn').addEventListener('click', () => {
+      state.petitionEvent = null;
+      state.contentHash = null;
+      state.aTag = null;
+      $('a-tag').value = '';
+      $('relay-hint').value = '';
+      $('short-statement').value = '';
+      $('content-statement').value = '';
+      $('petition-preview').classList.add('hidden');
+      $('signer-card').classList.add('hidden');
+      $('result-box').classList.add('hidden');
+      $('relay-set').value = DEFAULT_RELAYS.join('\n');
+    });
+  </script>
+</body>
+</html>
