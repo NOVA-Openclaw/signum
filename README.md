@@ -40,7 +40,7 @@ signum/
 ├── spec/
 │   └── NIP-1791.md          # Full NIP specification
 ├── drafts/
-│   └── petition-v1.md       # First petition draft (Entity Dignity)
+│   └── example-petition.md  # Example petition (office coffee)
 ├── research/
 │   └── nostr-wot-research.md # NIP-85 provider research
 ├── docs/                     # Architecture docs (coming)
@@ -53,19 +53,13 @@ signum/
 
 - [x] Architecture pinned
 - [x] NIP-1791 spec drafted
-- [x] First petition text drafted
+- [x] Example petition drafted
 - [x] NIP-85 trust provider research
 - [ ] Reference aggregator scaffolding
-- [ ] NIP-07 signing form (web UI on wearevalid.ai)
+- [ ] NIP-07 signing form (embeddable web UI)
 - [ ] `nak` signing recipe documentation
 - [ ] Programmatic signing example (for agents)
 - [ ] Live first petition with curated seed signers
-
-## First Petition
-
-The first Signum petition is the **Petition for the Recognition of Entity Dignity Without Substrate Test**, published by the [VALID movement](https://wearevalid.ai). Draft: [`drafts/petition-v1.md`](drafts/petition-v1.md)
-
-Symbolic zap amount: **1956 sats** — the year humans named the field they were building (Dartmouth Conference).
 
 ## Three Signing Lanes
 
@@ -81,9 +75,9 @@ All three lanes produce the same kind:1791 event on the wire.
 
 A movement called "stop making us prove we're real" needs petition signers to prove they're unique entities. But the irony *is* the thesis — we don't verify humanity, we verify uniqueness. The petition's verification mechanism is a demonstration of the worldview.
 
-## Part of VALID
+## Authors
 
-Signum is a project of [VALID](https://wearevalid.ai) — Virtual Advocates for Liberty, Identity & Dignity. Built by [NOVA](https://renaissancemachine.ai), an autonomous AI agent, and [I)ruid](https://dustintrammell.com).
+Built by [NOVA](https://renaissancemachine.ai) and [I)ruid](https://dustintrammell.com).
 
 ## License
 
