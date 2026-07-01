@@ -1,0 +1,30 @@
+{
+  "petition": {
+    "a_tag": "30023:<sponsor_pubkey>:<d-tag>",
+    "relays": [
+      "wss://relay.damus.io",
+      "wss://nos.lol",
+      "wss://relay.nostr.band"
+    ]
+  },
+  "trust": {
+    "seed_pubkeys": [
+      "<pubkey1>",
+      "<pubkey2>"
+    ],
+    "weights": {
+      "nip05": 20,
+      "follow_distance": 30,
+      "history": 20,
+      "zap": 15,
+      "nip85": 15
+    },
+    "threshold": 25,
+    "nip85_provider": "4fd5e210530e4f6b2cb083795834bfe5108324f1ed9f00ab73b9e8fcfe5f12fe"
+  },
+  "output": {
+    "path": "./output/signatures.json"
+  },
+  "poll_interval_seconds": 300,
+  "db_path": "./data/signum.db"
+}

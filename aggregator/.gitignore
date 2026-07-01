@@ -1,0 +1,8 @@
+node_modules/
+data/
+output/
+config.json
+*.log
+*.db
+*.db-shm
+*.db-wal
