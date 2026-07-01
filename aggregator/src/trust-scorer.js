@@ -108,6 +108,12 @@ export class TrustScorer {
 
     const graph = this.db.getFollowGraph();
     const visited = new Set(this.seedPubkeys);
+    // Seed pubkeys themselves get distance 0 — they are maximally trusted.
+    for (const seed of this.seedPubkeys) {
+      if (targetPubkeys.includes(seed) && !distances.has(seed)) {
+        distances.set(seed, 0);
+      }
+    }
     let frontier = [...this.seedPubkeys];
     let depth = 0;
 
@@ -132,6 +138,7 @@ export class TrustScorer {
   }
 
   _distanceToScore(distance) {
+    if (distance === 0) return 100;
     if (distance === 1) return 90;
     if (distance === 2) return 60;
     if (distance === 3) return 30;
