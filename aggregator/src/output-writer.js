@@ -32,16 +32,22 @@ export class OutputWriter {
     const gatedCount = signatures.length - qualifyingCount;
 
     const output = {
-      petition_title: petition?.title || '',
-      petition_d_tag: petition?.d_tag || '',
-      petition_a_tag: this.config.petition.a_tag,
-      petition_event_id: petition?.event_id || null,
-      total_signatures: signatures.length,
-      qualifying_signatures: qualifyingCount,
-      gated_count: gatedCount,
-      threshold: methodology.threshold,
+      petition: {
+        title: petition?.title || '',
+        d_tag: petition?.d_tag || '',
+        a_tag: this.config.petition.a_tag,
+        event_id: petition?.event_id || null,
+        sponsor_pubkey: petition?.pubkey || '',
+        content_hash: petition?.content_hash || ''
+      },
+      stats: {
+        total_signatures: signatures.length,
+        qualifying_signatures: qualifyingCount,
+        gated_count: gatedCount,
+        threshold: methodology.threshold,
+        last_updated: now
+      },
       trust_methodology: methodology,
-      last_updated: now,
       signatures_chronological: chronological,
       signatures_trust_weighted: trustWeighted
     };
@@ -68,7 +74,8 @@ export class OutputWriter {
       trust_breakdown: scored.trust_breakdown,
       timestamp: scored.created_at,
       event_id: scored.id,
-      zapped: scored.zapped === 1 || scored.zapped === true
+      zapped: scored.zapped === 1 || scored.zapped === true,
+      gated: scored.trust_score < (this.config.trust?.threshold ?? 25)
     };
   }
 }
