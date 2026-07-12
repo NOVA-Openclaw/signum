@@ -222,7 +222,7 @@
       color: var(--text-muted);
       font-size: 0.9rem;
       white-space: pre-wrap;
-      max-height: 180px;
+      max-height: 420px;
       overflow-y: auto;
     }
 
@@ -621,7 +621,9 @@
         $('preview-dtag').textContent = parsed.dTag;
         $('preview-sponsor').textContent = parsed.pubkey;
         $('preview-hash').textContent = state.contentHash;
-        $('preview-excerpt').textContent = result.content.slice(0, 1200) + (result.content.length > 1200 ? '\n\n…' : '');
+        // Show the FULL petition content (scrollable via CSS max-height +
+        // overflow-y: auto). Never truncate what the signer is attesting to.
+        $('preview-excerpt').textContent = result.content;
         $('petition-preview').classList.remove('hidden');
         $('signer-card').classList.remove('hidden');
       } catch (err) {
