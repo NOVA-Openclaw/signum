@@ -422,10 +422,22 @@
         <ul class="relay-list" id="relay-results"></ul>
       </div>
     </section>
+
+    <section class="card hidden" id="zap-card">
+      <h2><span>⚡ Reinforce with a symbolic zap</span></h2>
+      <p class="muted" id="zap-intro"></p>
+      <div class="actions">
+        <button class="btn-primary" id="zap-btn">
+          <span id="zap-spinner" class="spinner hidden"></span>
+          <span id="zap-label">Zap</span>
+        </button>
+      </div>
+      <div class="result hidden" id="zap-result"></div>
+    </section>
   </main>
 
   <script type="module">
-    import { getEventHash } from 'https://esm.sh/nostr-tools@2.12.0';
+    import { getEventHash, nip19 } from 'https://esm.sh/nostr-tools@2.12.0';
 
     const DEFAULT_RELAYS = [
       'wss://relay.damus.io',
@@ -434,6 +446,16 @@
     ];
 
     const CLIENT_TAG = ['client', 'signum-web', 'https://github.com/NOVA-Openclaw/signum'];
+
+    // ── Per-petition zap config (spam-gate / trust reinforcement) ────────
+    // Overridden per deployment. NIP-1791's spam-gate section lets a
+    // symbolic NIP-57 zap referencing the signature event strengthen the
+    // signer's trust score. Defaults here target the office-coffee
+    // reference petition; the VALID deployment bakes 1956 / valid@wearevalid.ai.
+    const PETITION_CONFIG = {
+      zapAmountSats: 42,
+      zapLnAddress: 'nova@renaissancemachine.ai'
+    };
 
     const state = {
       nostr: null,
@@ -678,6 +700,8 @@
       box.classList.remove('hidden');
       $('sign-btn').classList.add('hidden');
       $('sign-btn').disabled = true;
+      // Signing once is success — offer the optional trust-reinforcing zap.
+      showZapPrompt();
     }
 
     function clearAlreadySigned() {
@@ -687,6 +711,7 @@
       box.innerHTML = '';
       $('sign-btn').classList.remove('hidden');
       $('sign-btn').disabled = !state.nostr;
+      $('zap-card').classList.add('hidden');
     }
 
     async function checkAlreadySigned() {
@@ -1003,6 +1028,205 @@
       }
     }
 
+    // ── Symbolic zap (NIP-57 spam-gate / trust reinforcement) ──────────
+    // The aggregator credits a signature when it finds a kind:9735 zap
+    // receipt carrying an ["e", "<signature_event_id>"] tag (it queries
+    // {kinds:[9735], '#e':[sigId]} and scores any match as 100). So the
+    // zap ONLY counts when it goes through the NIP-57 zap-request flow
+    // that preserves that e-tag, or when the signature event is zapped
+    // natively in a Nostr client (lane C). A bare lightning-address
+    // payment produces no nostr receipt and will NOT be credited.
+    // Form v1: effective zap recipient = sponsor (no coordinator routing).
+
+    function zapAmountSats() {
+      const tag = state.petitionEvent?.tags?.find(t => t[0] === 'zap_amount');
+      const fromPetition = tag && /^\d+$/.test(tag[1]) ? Number(tag[1]) : null;
+      return fromPetition || PETITION_CONFIG.zapAmountSats;
+    }
+
+    async function resolveLnurlPay(lnaddr) {
+      const [name, domain] = lnaddr.split('@');
+      if (!name || !domain) throw new Error('invalid lightning address');
+      const res = await fetch(`https://${domain}/.well-known/lnurlp/${encodeURIComponent(name)}`);
+      if (!res.ok) throw new Error('LNURL lookup failed (' + res.status + ')');
+      const data = await res.json();
+      if (!data.callback) throw new Error('LNURL response missing callback');
+      return data;
+    }
+
+    function njumpLink(evt) {
+      try {
+        const nevent = nip19.neventEncode({
+          id: evt.id, author: evt.pubkey, relays: getRelaysFromInput().slice(0, 3)
+        });
+        return `https://njump.me/${nevent}`;
+      } catch { return `https://njump.me/${evt.id}`; }
+    }
+
+    async function renderQr(container, text) {
+      try {
+        const QR = await import('https://esm.sh/qrcode@1.5.4');
+        const canvas = document.createElement('canvas');
+        await (QR.toCanvas || QR.default.toCanvas)(canvas, text, { width: 220, margin: 1 });
+        canvas.style.cssText = 'background:#fff;border-radius:8px;padding:8px;max-width:100%';
+        container.appendChild(canvas);
+      } catch (e) {
+        console.warn('QR render skipped:', e);  // QR is a nicety, not required.
+      }
+    }
+
+    function copyButton(text, label) {
+      const btn = document.createElement('button');
+      btn.className = 'btn-secondary';
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(text).then(() => {
+          const old = btn.textContent; btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = old; }, 1500);
+        });
+      });
+      return btn;
+    }
+
+    function njumpFallback(box, evt, prefixMsg) {
+      box.classList.remove('hidden');
+      box.innerHTML = `<div class="muted">${prefixMsg}</div>`;
+      const a = document.createElement('a');
+      a.href = njumpLink(evt); a.target = '_blank'; a.rel = 'noopener';
+      a.className = 'btn-secondary';
+      a.style.cssText = 'text-decoration:none;display:inline-block;margin-top:10px;';
+      a.textContent = 'Zap on njump ↗';
+      box.appendChild(a);
+    }
+
+    function showZapPrompt() {
+      const evt = state.existingSignature;
+      if (!evt) return;
+      const amount = zapAmountSats();
+      $('zap-intro').innerHTML =
+        `Reinforce your signature with a symbolic zap of <strong>${amount} sats</strong>. ` +
+        `Optional — it strengthens your entry's trust score but is never required to sign.`;
+      $('zap-label').textContent = `⚡ Zap ${amount} sats`;
+      $('zap-result').classList.add('hidden');
+      $('zap-card').classList.remove('hidden');
+    }
+
+    async function doZap() {
+      const evt = state.existingSignature;
+      if (!evt) { alert('Sign the petition before zapping.'); return; }
+      const parsed = parseATag(state.aTag);
+      const recipientPubkey = parsed?.pubkey;  // effective recipient = sponsor
+      const amount = zapAmountSats();
+      const amountMsats = amount * 1000;
+      const box = $('zap-result');
+
+      $('zap-btn').disabled = true;
+      $('zap-spinner').classList.remove('hidden');
+      box.classList.add('hidden');
+
+      try {
+        const lnaddr = PETITION_CONFIG.zapLnAddress;
+        if (!lnaddr) throw new Error('no zap recipient configured');
+
+        const lnurl = await resolveLnurlPay(lnaddr);
+        const min = lnurl.minSendable ?? 1000;
+        const max = lnurl.maxSendable ?? 100000000;
+        const sendMsats = Math.max(min, Math.min(max, amountMsats));
+
+        let invoice = null;
+        // NIP-57 zap request — creditable receipt path (server must be
+        // nostr-enabled: allowsNostr + nostrPubkey).
+        if (lnurl.allowsNostr && lnurl.nostrPubkey && state.nostr) {
+          const zapReq = {
+            kind: 9734,
+            created_at: Math.floor(Date.now() / 1000),
+            content: '',
+            tags: [
+              ['relays', ...getRelaysFromInput()],
+              ['amount', String(sendMsats)],
+              ['e', evt.id],
+              ['a', state.aTag],
+              ['p', recipientPubkey || lnurl.nostrPubkey]
+            ]
+          };
+          let signedReq = null;
+          try {
+            const raw = await state.nostr.signEvent(zapReq);
+            signedReq = raw && raw.sig ? raw : (raw && raw.event && raw.event.sig ? raw.event : null);
+          } catch (e) { console.warn('zap request sign failed:', e); }
+          if (signedReq && signedReq.sig) {
+            const cb = new URL(lnurl.callback);
+            cb.searchParams.set('amount', String(sendMsats));
+            cb.searchParams.set('nostr', JSON.stringify(signedReq));
+            const r = await fetch(cb.toString());
+            const j = await r.json();
+            invoice = j.pr || null;
+          }
+        }
+        // Soft fallback: plain LNURL invoice (no nostr receipt, not credited
+        // by the aggregator, but still lets the user pay symbolically).
+        if (!invoice) {
+          const cb = new URL(lnurl.callback);
+          cb.searchParams.set('amount', String(sendMsats));
+          const r = await fetch(cb.toString());
+          const j = await r.json();
+          invoice = j.pr || null;
+        }
+        if (!invoice) throw new Error('no invoice returned');
+
+        // Lane A: WebLN one-click pay (Alby, etc.).
+        if (typeof window.webln !== 'undefined') {
+          try {
+            await window.webln.enable();
+            await window.webln.sendPayment(invoice);
+            box.classList.remove('hidden');
+            box.innerHTML =
+              `<strong style="color:var(--green)">⚡ Zap sent — thank you!</strong>` +
+              `<div class="muted">Your symbolic zap reinforces your signature's trust score.</div>`;
+            return;
+          } catch (e) {
+            console.warn('WebLN declined/failed, showing manual invoice:', e);
+          }
+        }
+
+        // Lane B: manual — invoice QR + copy, plus native-client lane C.
+        box.classList.remove('hidden');
+        box.innerHTML = '';
+        const h = document.createElement('strong');
+        h.textContent = `Zap ${amount} sats`;
+        box.appendChild(h);
+        const p = document.createElement('div');
+        p.className = 'muted';
+        p.style.margin = '6px 0 12px';
+        p.textContent = 'Scan or copy this Lightning invoice to pay from any wallet:';
+        box.appendChild(p);
+        const qrWrap = document.createElement('div');
+        box.appendChild(qrWrap);
+        renderQr(qrWrap, invoice.toUpperCase());
+        const code = document.createElement('div');
+        code.style.margin = '12px 0';
+        code.innerHTML = `<code>${invoice}</code>`;
+        box.appendChild(code);
+        const row = document.createElement('div');
+        row.className = 'actions';
+        row.appendChild(copyButton(invoice, 'Copy invoice'));
+        const nj = document.createElement('a');
+        nj.href = njumpLink(evt); nj.target = '_blank'; nj.rel = 'noopener';
+        nj.className = 'btn-secondary';
+        nj.style.textDecoration = 'none';
+        nj.textContent = 'Zap on njump ↗';
+        row.appendChild(nj);
+        box.appendChild(row);
+      } catch (err) {
+        njumpFallback(box, evt,
+          `Automatic zap unavailable (${err.message}). You can still zap your signature natively:`);
+      } finally {
+        $('zap-spinner').classList.add('hidden');
+        $('zap-btn').disabled = false;
+      }
+    }
+
+    $('zap-btn').addEventListener('click', doZap);
     $('fetch-btn').addEventListener('click', fetchPetition);
     $('sign-btn').addEventListener('click', signAndPublish);
     $('reset-btn').addEventListener('click', () => {
