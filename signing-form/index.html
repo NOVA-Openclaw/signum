@@ -411,12 +411,18 @@
       <label for="relay-set">Publish relays (one per line)</label>
       <textarea id="relay-set" rows="4"></textarea>
 
-      <div class="notice success hidden" id="already-signed"></div>
-
       <div class="actions">
         <button class="btn-primary" id="sign-btn" disabled>Sign &amp; publish</button>
       </div>
+    </section>
 
+    <!-- Shown INSTEAD of the signing form when the connected pubkey has
+         already signed this petition: the entire section-2 form (entity
+         type, statements, relays, sign button) is hidden and only this
+         notice panel (plus publish results, when fresh) is visible. -->
+    <section class="card hidden" id="signed-card">
+      <h2>2. Your signature</h2>
+      <div class="notice success" id="already-signed"></div>
       <div class="result hidden" id="result-box">
         <div id="result-summary"></div>
         <ul class="relay-list" id="relay-results"></ul>
@@ -698,7 +704,12 @@
         <a href="${wallHref}">See your signature on the wall &rarr;</a>
       `;
       box.classList.remove('hidden');
-      $('sign-btn').classList.add('hidden');
+      // Hide the ENTIRE signing form (entity type, statements, relays,
+      // sign button) — an already-signed visitor gets the notice panel
+      // only. All detection points (on connect, on fetch, pre-publish
+      // race check, post-publish) funnel through here.
+      $('signer-card').classList.add('hidden');
+      $('signed-card').classList.remove('hidden');
       $('sign-btn').disabled = true;
       // Signing once is success — offer the optional trust-reinforcing zap.
       showZapPrompt();
@@ -709,7 +720,10 @@
       const box = $('already-signed');
       box.classList.add('hidden');
       box.innerHTML = '';
-      $('sign-btn').classList.remove('hidden');
+      $('signed-card').classList.add('hidden');
+      $('result-box').classList.add('hidden');
+      // Restore the signing form only when a petition is actually loaded.
+      if (state.petitionEvent) $('signer-card').classList.remove('hidden');
       $('sign-btn').disabled = !state.nostr;
       $('zap-card').classList.add('hidden');
     }
