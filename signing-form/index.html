@@ -722,12 +722,13 @@
       try {
         const event = buildSignatureEvent();
 
-        // Always await getPublicKey() before signing, even if we already
-        // have a cached pubkey: it forces the extension's unlock/decrypt
-        // flow to complete BEFORE signEvent is called. Some extensions
-        // (observed with NostrKey) return an incomplete event from
-        // signEvent while keys are still locked and only then prompt to
-        // unlock. Many also expect the unsigned template to carry pubkey.
+        // Await getPublicKey() before signing even though the template
+        // stays bare: it forces the extension's unlock/decrypt flow to
+        // complete BEFORE signEvent is called (NostrKey returns an error
+        // object from signEvent while locked). Note: per NIP-07 the
+        // unsigned template must be minimal — kind, created_at, tags,
+        // content ONLY. Do not add pubkey to the template; some
+        // extensions reject templates carrying unexpected fields.
         async function refreshPubkey() {
           try {
             const pk = await state.nostr.getPublicKey();
@@ -735,34 +736,57 @@
           } catch (e) {
             console.warn('getPublicKey failed before signing:', e);
           }
-          if (state.pubkey) event.pubkey = state.pubkey;
         }
 
-        // Normalize the various return shapes seen across NIP-07
-        // extensions: {event: {...}} wrappers, and partial returns
-        // (sig-only / sig+id) merged over our template.
+        // Normalize the various signEvent return shapes seen across
+        // NIP-07 extensions. Returns:
+        //   { error: '<detail>' }  — extension handed back an error object
+        //   { event: {...} }       — usable result merged over our template
+        //   null                   — no object at all
         function normalizeSigned(raw) {
           let s = raw;
           if (s && !s.sig && s.event && s.event.sig) s = s.event;
           if (!s || typeof s !== 'object') return null;
-          return { ...event, ...s };
+          // An error/message key without a sig means the extension
+          // returned an error object, not a signed event. Surface it.
+          if (!s.sig && (s.error !== undefined || s.message !== undefined)) {
+            console.error('signEvent returned an error object:', JSON.stringify(raw));
+            const detail = [s.error, s.message]
+              .filter(v => v !== undefined && v !== null && v !== '')
+              .map(v => typeof v === 'string' ? v : JSON.stringify(v))
+              .join(' — ');
+            return { error: detail || 'unknown extension error (see console)' };
+          }
+          if (!s.sig) {
+            console.error('signEvent returned an incomplete result:', JSON.stringify(raw));
+          }
+          // Merge partial returns (sig-only / sig+id) over our template.
+          return { event: { ...event, ...s } };
         }
 
         await refreshPubkey();
-        let signed = normalizeSigned(await state.nostr.signEvent(event));
+        let res = normalizeSigned(await state.nostr.signEvent(event));
 
         // If the result is unusable, the keys may have been locked when
         // signEvent ran and the unlock prompt raced us. Re-await
         // getPublicKey (completes the unlock flow) and retry once.
-        if (!signed || !signed.sig) {
-          console.warn('signEvent returned incomplete result; retrying after unlock…');
+        if (!res || res.error || !res.event.sig) {
+          console.warn('signEvent attempt failed; retrying after unlock…');
           await refreshPubkey();
-          signed = normalizeSigned(await state.nostr.signEvent(event));
+          res = normalizeSigned(await state.nostr.signEvent(event));
         }
 
-        if (!signed) {
+        if (!res) {
           throw new Error('Extension returned no event object.');
         }
+        if (res.error) {
+          throw new Error('Extension error: ' + res.error);
+        }
+
+        let signed = res.event;
+        // Template is bare per NIP-07, so backfill pubkey from
+        // getPublicKey() if the extension did not include it.
+        if (!signed.pubkey && state.pubkey) signed.pubkey = state.pubkey;
 
         // sig is the one thing only the extension can produce.
         if (!signed.sig) {
