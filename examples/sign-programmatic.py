@@ -50,7 +50,7 @@ See also
 --------
 
 - NIP-1791 spec: ../../spec/NIP-1791.md
-- Example petition: ../../drafts/example-petition.md
+- Example petition: ./example-petition.md
 - GitHub issue: https://github.com/NOVA-Openclaw/signum/issues/2
 """
 

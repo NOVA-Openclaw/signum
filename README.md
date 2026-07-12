@@ -33,14 +33,30 @@ Petitions themselves use existing **kind:30023** (NIP-23 long-form content). Spa
 
 Full spec: [`spec/NIP-1791.md`](spec/NIP-1791.md)
 
+## Try It Live
+
+The office-coffee petition is live on Nostr as the **official Signum test/sandbox
+petition**. Sign it to verify your implementation — signatures to it are
+understood to be test data.
+
+- **Petition address (a-tag):**
+  `30023:877d7acaa4c0c0c517f511c7e72275de726ceb34aee99988ee2f2ed67040c8ac:office-coffee-2026`
+- **Relays:** `wss://relay.damus.io`, `wss://nos.lol`
+- **Live signing form (NIP-07):** https://renaissancemachine.ai/signum-test/index.html
+- **Live signature wall:** https://renaissancemachine.ai/signum-test/signature-wall.html
+
+See [`examples/example-petition.md`](examples/example-petition.md) for the full
+petition text, sponsor pubkey, canonical `content_hash`, and live coordinates.
+
 ## Repository Structure
 
 ```
 signum/
 ├── spec/
 │   └── NIP-1791.md          # Full NIP specification
-├── drafts/
-│   └── example-petition.md  # Example petition (office coffee)
+├── examples/
+│   ├── example-petition.md  # Example petition (office coffee)
+│   └── sign-programmatic.py # Programmatic signing example
 ├── research/
 │   └── nostr-wot-research.md # NIP-85 provider research
 ├── docs/                     # Architecture docs (coming)

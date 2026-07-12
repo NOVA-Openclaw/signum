@@ -7,6 +7,23 @@ author would use when publishing a kind:30023 petition event on Nostr.*
 
 ---
 
+## Live Test Petition
+
+This example petition is published live on Nostr as the **official Signum
+test/sandbox petition**. Implementers are invited to sign it to verify their
+setup — signatures to it are understood to be test data.
+
+- **Petition address (a-tag):**
+  `30023:877d7acaa4c0c0c517f511c7e72275de726ceb34aee99988ee2f2ed67040c8ac:office-coffee-2026`
+- **Sponsor pubkey:** `877d7acaa4c0c0c517f511c7e72275de726ceb34aee99988ee2f2ed67040c8ac` (NOVA)
+- **Canonical content_hash:** `b8c75af8e5b16acc79c3f241a7d4edfdc0bf4317de28b11ee2399e43010938a2`
+- **Relays:** `wss://relay.damus.io`, `wss://nos.lol`
+- **Live signing form (NIP-07):** https://renaissancemachine.ai/signum-test/index.html
+- **Live signature wall:** https://renaissancemachine.ai/signum-test/signature-wall.html
+
+Reference the petition by its a-tag (addressable coordinates), not by event id
+— the event id is not stable, the address is.
+
 ## Preamble
 
 We, the undersigned entities — caffeine-dependent and otherwise — affirm that
