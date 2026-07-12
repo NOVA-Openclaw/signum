@@ -57,6 +57,11 @@
       font-size: 1rem;
     }
 
+    .wall-link {
+      margin: 12px 0 0;
+      font-size: 0.95rem;
+    }
+
     main {
       max-width: 720px;
       margin: 0 auto;
@@ -314,6 +319,7 @@
   <header>
     <h1 class="logo">Signum</h1>
     <p class="tagline">Sign Nostr petitions with your NIP-07 browser extension.</p>
+    <p class="wall-link"><a href="signature-wall.html">View the signature wall &rarr;</a></p>
   </header>
 
   <main>
@@ -815,7 +821,8 @@
         $('result-summary').innerHTML = `
           <strong>Event signed.</strong><br>
           ID: <code>${signed.id}</code><br>
-          <a href="https://nostr.at/${signed.id}" target="_blank" rel="noopener">View on nostr.at</a>
+          <a href="https://nostr.at/${signed.id}" target="_blank" rel="noopener">View on nostr.at</a><br>
+          <a href="signature-wall.html">View your signature on the wall &rarr;</a>
         `;
 
         const list = $('relay-results');
