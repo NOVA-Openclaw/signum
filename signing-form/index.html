@@ -721,14 +721,52 @@
 
       try {
         const event = buildSignatureEvent();
-        const signed = await state.nostr.signEvent(event);
 
-        if (!signed.id || !signed.sig || !signed.pubkey) {
-          throw new Error('Extension returned an incomplete event.');
+        // Many NIP-07 extensions expect the unsigned template to already
+        // carry the pubkey, and some sign relative to it. Fetch it first.
+        if (!state.pubkey) {
+          try {
+            state.pubkey = await state.nostr.getPublicKey();
+          } catch (e) {
+            console.warn('getPublicKey failed before signing:', e);
+          }
+        }
+        if (state.pubkey) event.pubkey = state.pubkey;
+
+        let signed = await state.nostr.signEvent(event);
+
+        // Some extensions wrap the result: { event: {...} }
+        if (signed && !signed.sig && signed.event && signed.event.sig) {
+          signed = signed.event;
+        }
+        if (!signed || typeof signed !== 'object') {
+          throw new Error('Extension returned no event object.');
         }
 
+        // Some extensions return only the added fields (e.g. just sig, or
+        // sig+id) rather than the full event. Merge with our template.
+        signed = { ...event, ...signed };
+
+        // sig is the one thing only the extension can produce.
+        if (!signed.sig) {
+          const missing = ['id', 'pubkey', 'sig'].filter(k => !signed[k]);
+          throw new Error(
+            'Extension returned an incomplete event (missing: ' +
+            missing.join(', ') + '). Raw keys: ' + Object.keys(signed).join(', ')
+          );
+        }
+        if (!signed.pubkey) {
+          throw new Error(
+            'Extension returned an incomplete event (missing: pubkey) and ' +
+            'getPublicKey() did not provide one.'
+          );
+        }
+
+        // If id is missing, compute it ourselves (NIP-01 serialization).
         const expectedId = getEventHash(signed);
-        if (signed.id !== expectedId) {
+        if (!signed.id) {
+          signed.id = expectedId;
+        } else if (signed.id !== expectedId) {
           throw new Error('Event ID mismatch after signing.');
         }
 
