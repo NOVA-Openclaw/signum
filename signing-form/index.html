@@ -329,6 +329,10 @@
       <div class="extension-links" id="ext-links">
         <a href="https://getalby.com/" target="_blank" rel="noopener">Get Alby</a>
         <a href="https://nos2x.com/" target="_blank" rel="noopener">Get nos2x</a>
+        <a href="https://chromewebstore.google.com/detail/nostrkey/cggakcmbihnpmcddkkfmoglgaocnmaop" target="_blank" rel="noopener">Get NostrKey</a>
+      </div>
+      <div class="actions">
+        <button class="btn-secondary" id="recheck-btn">Re-check for extension</button>
       </div>
     </section>
 
@@ -343,7 +347,7 @@
       <p class="hint">Added as the third value of the signature event’s <code>a</code> tag.</p>
 
       <div class="actions">
-        <button class="btn-primary" id="fetch-btn" disabled>
+        <button class="btn-primary" id="fetch-btn">
           <span id="fetch-spinner" class="spinner hidden"></span>
           <span id="fetch-label">Fetch petition from relays</span>
         </button>
@@ -472,32 +476,58 @@
         setStatus('ext-status', 'ok', 'Extension connected');
         $('ext-message').textContent = `Connected pubkey: ${state.pubkey || '...'}`;
         $('ext-links').classList.add('hidden');
-        $('fetch-btn').disabled = false;
+        $('recheck-btn').classList.add('hidden');
         $('sign-btn').disabled = false;
       } else {
         setStatus('ext-status', 'bad', 'Not detected');
         $('ext-message').innerHTML =
-          'This form needs a Nostr browser extension to access your key and sign events. It never asks for your <code>nsec</code>.';
+          'This form needs a Nostr browser extension to sign events (fetching a petition works without one). It never asks for your <code>nsec</code>. If your extension just loaded, hit “Re-check for extension”.';
         $('ext-links').classList.remove('hidden');
-        $('fetch-btn').disabled = true;
+        $('recheck-btn').classList.remove('hidden');
         $('sign-btn').disabled = true;
       }
     }
 
-    async function initExtension() {
-      if (typeof window.nostr !== 'undefined') {
-        state.nostr = window.nostr;
-        try {
-          state.pubkey = await window.nostr.getPublicKey();
-        } catch (e) {
-          console.warn('Could not retrieve pubkey:', e);
-        }
+    // Many NIP-07 extensions (NostrKey, Alby, nos2x) inject window.nostr
+    // asynchronously after DOMContentLoaded, so a single check at load time
+    // misses them. Poll for a while and update the UI live when it appears.
+    let detectPoll = null;
+
+    async function adoptExtension() {
+      if (state.nostr) return true;
+      if (typeof window.nostr === 'undefined') return false;
+      state.nostr = window.nostr;
+      updateExtensionUI();
+      try {
+        state.pubkey = await window.nostr.getPublicKey();
+      } catch (e) {
+        console.warn('Could not retrieve pubkey:', e);
       }
       updateExtensionUI();
+      return true;
     }
 
-    window.addEventListener('nostrLoaded', initExtension);
-    document.addEventListener('DOMContentLoaded', initExtension);
+    function startDetection(maxMs = 10000, intervalMs = 250) {
+      if (detectPoll) { clearInterval(detectPoll); detectPoll = null; }
+      if (state.nostr) { updateExtensionUI(); return; }
+      const deadline = Date.now() + maxMs;
+      setStatus('ext-status', 'warn', 'Detecting…');
+      const tick = () => {
+        if (typeof window.nostr !== 'undefined') {
+          if (detectPoll) { clearInterval(detectPoll); detectPoll = null; }
+          adoptExtension();
+        } else if (Date.now() >= deadline) {
+          if (detectPoll) { clearInterval(detectPoll); detectPoll = null; }
+          updateExtensionUI();
+        }
+      };
+      detectPoll = setInterval(tick, intervalMs);
+      tick();
+    }
+
+    window.addEventListener('nostrLoaded', adoptExtension);
+    $('recheck-btn').addEventListener('click', () => startDetection());
+    startDetection();
 
     $('relay-set').value = DEFAULT_RELAYS.join('\n');
 
@@ -594,7 +624,7 @@
       } finally {
         $('fetch-spinner').classList.add('hidden');
         $('fetch-label').textContent = 'Fetch petition from relays';
-        $('fetch-btn').disabled = !state.nostr;
+        $('fetch-btn').disabled = false;
       }
     }
 
