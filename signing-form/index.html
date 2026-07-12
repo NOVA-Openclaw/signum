@@ -195,6 +195,13 @@
       margin-bottom: 6px;
     }
 
+    .notice.success {
+      border-left-color: var(--green);
+      background: rgba(34, 197, 94, 0.08);
+    }
+
+    .notice.success strong { color: var(--green); }
+
     .hidden { display: none !important; }
 
     .petition-preview {
@@ -404,6 +411,8 @@
       <label for="relay-set">Publish relays (one per line)</label>
       <textarea id="relay-set" rows="4"></textarea>
 
+      <div class="notice success hidden" id="already-signed"></div>
+
       <div class="actions">
         <button class="btn-primary" id="sign-btn" disabled>Sign &amp; publish</button>
       </div>
@@ -431,7 +440,8 @@
       pubkey: null,
       petitionEvent: null,
       contentHash: null,
-      aTag: null
+      aTag: null,
+      existingSignature: null
     };
 
     const $ = id => document.getElementById(id);
@@ -483,7 +493,7 @@
         $('ext-message').textContent = `Connected pubkey: ${state.pubkey || '...'}`;
         $('ext-links').classList.add('hidden');
         $('recheck-btn').classList.add('hidden');
-        $('sign-btn').disabled = false;
+        $('sign-btn').disabled = !!state.existingSignature;
       } else {
         setStatus('ext-status', 'bad', 'Not detected');
         $('ext-message').innerHTML =
@@ -510,6 +520,8 @@
         console.warn('Could not retrieve pubkey:', e);
       }
       updateExtensionUI();
+      // Advisory duplicate check as soon as we know who the signer is.
+      if (state.pubkey) checkAlreadySigned();
       return true;
     }
 
@@ -585,6 +597,114 @@
       });
     }
 
+    // ── Duplicate-signature detection ─────────────────────────────────
+    // NOTE: This check is advisory UX, not protocol enforcement. Relays
+    // will happily accept multiple kind:1791 events from the same pubkey
+    // for the same petition — deduplication is ultimately the
+    // aggregator's job (it counts one signature per pubkey, enforced by
+    // a UNIQUE(pubkey, petition_a_tag) constraint in its database). Here
+    // we just keep people from signing twice by accident. Signing once
+    // is success, not failure, so the already-signed state renders as a
+    // green success notice — no error tones.
+
+    function fetchSignaturesFromRelay(relayUrl, filter) {
+      return new Promise(resolve => {
+        const ws = new WebSocket(relayUrl);
+        const subId = 'signum-dup-' + Math.random().toString(36).slice(2, 10);
+        const events = [];
+        let settled = false;
+        let timer = null;
+
+        function finish() {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          try { ws.close(); } catch {}
+          resolve(events);
+        }
+
+        timer = setTimeout(finish, 8000);
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify(['REQ', subId, filter]));
+        };
+
+        ws.onmessage = msg => {
+          let data;
+          try { data = JSON.parse(msg.data); } catch { return; }
+          if (!Array.isArray(data)) return;
+          const [type, id, payload] = data;
+          if (id !== subId) return;
+          if (type === 'EVENT' && payload && payload.kind === 1791) {
+            events.push(payload);
+          } else if (type === 'EOSE') {
+            finish();
+          }
+        };
+
+        ws.onerror = () => finish();
+        ws.onclose = () => finish();
+      });
+    }
+
+    async function findExistingSignature(aTag, pubkey) {
+      const relayUrls = getRelaysFromInput();
+      if (relayUrls.length === 0) return null;
+      const filter = { kinds: [1791], authors: [pubkey], '#a': [aTag] };
+      const results = await Promise.allSettled(
+        relayUrls.map(url => fetchSignaturesFromRelay(url, filter))
+      );
+      const events = results.flatMap(r => (r.status === 'fulfilled' ? r.value : []));
+      if (events.length === 0) return null;
+      // The earliest event is the original signature.
+      return events.reduce((a, b) => (a.created_at <= b.created_at ? a : b));
+    }
+
+    function showAlreadySigned(evt) {
+      state.existingSignature = evt;
+      const when = new Date(evt.created_at * 1000).toLocaleString(undefined, {
+        dateStyle: 'long',
+        timeStyle: 'short'
+      });
+      const wallHref =
+        document.querySelector('.wall-link a')?.getAttribute('href') || 'signature-wall.html';
+      const box = $('already-signed');
+      box.innerHTML = `
+        <strong>\u2705 You've already signed this petition</strong>
+        Signed on ${when}<br>
+        Event ID: <code class="hash">${evt.id}</code><br>
+        <a href="${wallHref}">See your signature on the wall &rarr;</a>
+      `;
+      box.classList.remove('hidden');
+      $('sign-btn').classList.add('hidden');
+      $('sign-btn').disabled = true;
+    }
+
+    function clearAlreadySigned() {
+      state.existingSignature = null;
+      const box = $('already-signed');
+      box.classList.add('hidden');
+      box.innerHTML = '';
+      $('sign-btn').classList.remove('hidden');
+      $('sign-btn').disabled = !state.nostr;
+    }
+
+    async function checkAlreadySigned() {
+      if (!state.pubkey) return false;
+      const aTag = state.aTag || $('a-tag').value.trim();
+      if (!parseATag(aTag)) return false;
+      try {
+        const existing = await findExistingSignature(aTag, state.pubkey);
+        if (existing) {
+          showAlreadySigned(existing);
+          return true;
+        }
+      } catch (e) {
+        console.warn('Duplicate-signature check failed:', e);
+      }
+      return false;
+    }
+
     async function fetchPetition() {
       const aTag = $('a-tag').value.trim();
       const parsed = parseATag(aTag);
@@ -626,6 +746,11 @@
         $('preview-excerpt').textContent = result.content;
         $('petition-preview').classList.remove('hidden');
         $('signer-card').classList.remove('hidden');
+
+        // Re-run the duplicate check against the freshly loaded petition
+        // (clears any stale already-signed state from a previous a-tag).
+        clearAlreadySigned();
+        checkAlreadySigned();
       } catch (err) {
         const detail = err.errors ? err.errors[0]?.message : err.message;
         alert('Could not fetch petition: ' + (detail || err.message));
@@ -723,7 +848,19 @@
         return;
       }
 
+      if (state.existingSignature) return;
+
       $('sign-btn').disabled = true;
+      $('sign-btn').textContent = 'Checking…';
+
+      // Race protection: re-check for an existing signature right before
+      // publishing, in case one landed after the initial check (another
+      // tab, another device, or a slow relay).
+      if (await checkAlreadySigned()) {
+        $('sign-btn').textContent = 'Sign & publish';
+        return;
+      }
+
       $('sign-btn').textContent = 'Signing…';
       $('result-box').classList.add('hidden');
 
@@ -852,10 +989,16 @@
             badge.className = 'relay-state fail';
           }
         }));
+
+        // Signed and published — flip the UI into the already-signed
+        // success state so a second click can't publish a duplicate.
+        showAlreadySigned(signed);
       } catch (err) {
         alert('Signing failed: ' + err.message);
       } finally {
-        $('sign-btn').disabled = false;
+        if (!state.existingSignature) {
+          $('sign-btn').disabled = false;
+        }
         $('sign-btn').textContent = 'Sign & publish';
       }
     }
@@ -866,6 +1009,7 @@
       state.petitionEvent = null;
       state.contentHash = null;
       state.aTag = null;
+      clearAlreadySigned();
       $('a-tag').value = '';
       $('relay-hint').value = '';
       $('short-statement').value = '';
