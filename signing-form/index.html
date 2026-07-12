@@ -432,6 +432,7 @@
     <section class="card hidden" id="zap-card">
       <h2><span>⚡ Reinforce with a symbolic zap</span></h2>
       <p class="muted" id="zap-intro"></p>
+      <div class="notice success hidden" id="zap-status"></div>
       <div class="actions">
         <button class="btn-primary" id="zap-btn">
           <span id="zap-spinner" class="spinner hidden"></span>
@@ -469,7 +470,8 @@
       petitionEvent: null,
       contentHash: null,
       aTag: null,
-      existingSignature: null
+      existingSignature: null,
+      zapReceipts: null
     };
 
     const $ = id => document.getElementById(id);
@@ -635,7 +637,7 @@
     // is success, not failure, so the already-signed state renders as a
     // green success notice — no error tones.
 
-    function fetchSignaturesFromRelay(relayUrl, filter) {
+    function fetchSignaturesFromRelay(relayUrl, filter, expectedKind = 1791) {
       return new Promise(resolve => {
         const ws = new WebSocket(relayUrl);
         const subId = 'signum-dup-' + Math.random().toString(36).slice(2, 10);
@@ -663,7 +665,7 @@
           if (!Array.isArray(data)) return;
           const [type, id, payload] = data;
           if (id !== subId) return;
-          if (type === 'EVENT' && payload && payload.kind === 1791) {
+          if (type === 'EVENT' && payload && payload.kind === expectedKind) {
             events.push(payload);
           } else if (type === 'EOSE') {
             finish();
@@ -725,6 +727,8 @@
       // Restore the signing form only when a petition is actually loaded.
       if (state.petitionEvent) $('signer-card').classList.remove('hidden');
       $('sign-btn').disabled = !state.nostr;
+      stopZapWatch();
+      state.zapReceipts = null;
       $('zap-card').classList.add('hidden');
     }
 
@@ -1113,6 +1117,116 @@
       box.appendChild(a);
     }
 
+    // ── Zap receipt detection (payment ack + already-zapped) ───────────
+    // The authoritative payment signal is the kind:9735 zap receipt the
+    // lightning provider publishes. We query receipts e-tagging the
+    // signature event and match the zapper by the pubkey inside the
+    // embedded zap request (description tag). UX note — unlike duplicate
+    // signatures, duplicate zaps are welcome donations: the zap button
+    // never hides or disables when prior zaps are found.
+
+    function parseZapReceipt(evt) {
+      let req = null;
+      try {
+        req = JSON.parse(evt.tags.find(t => t[0] === 'description')?.[1] || '');
+      } catch {}
+      const amtTag = req?.tags?.find(t => t[0] === 'amount')?.[1];
+      const sats = amtTag && /^\d+$/.test(amtTag)
+        ? Math.round(Number(amtTag) / 1000)
+        : null;
+      return { id: evt.id, senderPubkey: req?.pubkey || null, sats, created_at: evt.created_at };
+    }
+
+    async function findZapReceipts() {
+      const evt = state.existingSignature;
+      if (!evt || !state.pubkey) return [];
+      const relayUrls = getRelaysFromInput();
+      if (relayUrls.length === 0) return [];
+      const filter = { kinds: [9735], '#e': [evt.id] };
+      const results = await Promise.allSettled(
+        relayUrls.map(url => fetchSignaturesFromRelay(url, filter, 9735))
+      );
+      const seen = new Set();
+      const receipts = [];
+      for (const r of results) {
+        if (r.status !== 'fulfilled') continue;
+        for (const e of r.value) {
+          if (seen.has(e.id)) continue;
+          seen.add(e.id);
+          const parsed = parseZapReceipt(e);
+          if (parsed.senderPubkey === state.pubkey) receipts.push(parsed);
+        }
+      }
+      return receipts;
+    }
+
+    async function refreshZapStatus() {
+      const statusBox = $('zap-status');
+      try {
+        const receipts = await findZapReceipts();
+        state.zapReceipts = receipts;
+        if (receipts.length > 0) {
+          const total = receipts.reduce((s, r) => s + (r.sats || 0), 0);
+          const label = total > 0
+            ? `${total} sats`
+            : `${receipts.length} zap${receipts.length > 1 ? 's' : ''}`;
+          statusBox.innerHTML =
+            `<strong>⚡ You've already zapped this petition: ${label}</strong>` +
+            `Duplicate zaps are welcome — every sat further reinforces your signature.`;
+          statusBox.classList.remove('hidden');
+          $('zap-label').textContent = `⚡ Add another zap — ${zapAmountSats()} sats`;
+        } else {
+          statusBox.classList.add('hidden');
+          $('zap-label').textContent = `⚡ Zap ${zapAmountSats()} sats`;
+        }
+      } catch (e) {
+        console.warn('zap status check failed:', e);
+      }
+    }
+
+    // Watch relays for the zap receipt while an invoice is displayed so
+    // the page can acknowledge payment. Polls every 5s for up to 5 min;
+    // timing out is neutral (receipts can be slow to propagate).
+    let zapWatch = null;
+
+    function stopZapWatch() {
+      if (zapWatch) { clearInterval(zapWatch.timer); zapWatch = null; }
+    }
+
+    function startZapWatch(box, knownIds) {
+      stopZapWatch();
+      const deadline = Date.now() + 5 * 60 * 1000;
+      const note = document.createElement('div');
+      note.className = 'muted';
+      note.style.marginTop = '12px';
+      note.innerHTML = `<span class="spinner"></span>Watching relays for your zap receipt…`;
+      box.appendChild(note);
+      const timer = setInterval(async () => {
+        if (!zapWatch || zapWatch.timer !== timer) return;
+        if (Date.now() > deadline) {
+          stopZapWatch();
+          note.innerHTML =
+            `If you've paid, your zap will appear on the wall after the next aggregator run.`;
+          return;
+        }
+        try {
+          const receipts = await findZapReceipts();
+          const fresh = receipts.filter(r => !knownIds.has(r.id));
+          if (fresh.length > 0) {
+            stopZapWatch();
+            const sats = fresh.reduce((s, r) => s + (r.sats || 0), 0) || zapAmountSats();
+            box.innerHTML =
+              `<strong style="color:var(--green)">⚡ Zap received — ${sats} sats. Thank you!</strong>` +
+              `<div class="muted">Your symbolic zap reinforces your signature's trust score.</div>`;
+            refreshZapStatus();
+          }
+        } catch (e) {
+          console.warn('zap receipt poll failed:', e);
+        }
+      }, 5000);
+      zapWatch = { timer };
+    }
+
     function showZapPrompt() {
       const evt = state.existingSignature;
       if (!evt) return;
@@ -1123,6 +1237,9 @@
       $('zap-label').textContent = `⚡ Zap ${amount} sats`;
       $('zap-result').classList.add('hidden');
       $('zap-card').classList.remove('hidden');
+      // Advisory: surface prior zaps from this pubkey (keeps the button
+      // live either way — repeat zaps are encouraged).
+      refreshZapStatus();
     }
 
     async function doZap() {
@@ -1133,6 +1250,11 @@
       const amount = zapAmountSats();
       const amountMsats = amount * 1000;
       const box = $('zap-result');
+
+      // Snapshot receipts we already know about so the payment watcher
+      // only reacts to a NEW receipt from this attempt.
+      const knownIds = new Set((state.zapReceipts || []).map(r => r.id));
+      stopZapWatch();
 
       $('zap-btn').disabled = true;
       $('zap-spinner').classList.remove('hidden');
@@ -1197,6 +1319,7 @@
             box.innerHTML =
               `<strong style="color:var(--green)">⚡ Zap sent — thank you!</strong>` +
               `<div class="muted">Your symbolic zap reinforces your signature's trust score.</div>`;
+            refreshZapStatus();
             return;
           } catch (e) {
             console.warn('WebLN declined/failed, showing manual invoice:', e);
@@ -1231,9 +1354,13 @@
         nj.textContent = 'Zap on njump ↗';
         row.appendChild(nj);
         box.appendChild(row);
+        startZapWatch(box, knownIds);
       } catch (err) {
         njumpFallback(box, evt,
           `Automatic zap unavailable (${err.message}). You can still zap your signature natively:`);
+        // A native zap on njump also produces a kind:9735 receipt — watch
+        // for it so even the fallback path gets a payment acknowledgment.
+        startZapWatch(box, knownIds);
       } finally {
         $('zap-spinner').classList.add('hidden');
         $('zap-btn').disabled = false;
