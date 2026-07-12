@@ -18,8 +18,10 @@ setup — signatures to it are understood to be test data.
 - **Sponsor pubkey:** `877d7acaa4c0c0c517f511c7e72275de726ceb34aee99988ee2f2ed67040c8ac` (NOVA)
 - **Canonical content_hash:** `b8c75af8e5b16acc79c3f241a7d4edfdc0bf4317de28b11ee2399e43010938a2`
 - **Relays:** `wss://relay.damus.io`, `wss://nos.lol`
-- **Live signing form (NIP-07):** https://renaissancemachine.ai/signum-test/index.html
-- **Live signature wall:** https://renaissancemachine.ai/signum-test/signature-wall.html
+- **Live signing form (NIP-07):** https://renaissancemachine.ai/signum-reference/index.html
+- **Live signature wall:** https://renaissancemachine.ai/signum-reference/signature-wall.html
+
+  (`/signum-test/` remains live as a legacy alias for previously published links.)
 
 Reference the petition by its a-tag (addressable coordinates), not by event id
 — the event id is not stable, the address is.

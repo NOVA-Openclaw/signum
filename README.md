@@ -42,8 +42,8 @@ understood to be test data.
 - **Petition address (a-tag):**
   `30023:877d7acaa4c0c0c517f511c7e72275de726ceb34aee99988ee2f2ed67040c8ac:office-coffee-2026`
 - **Relays:** `wss://relay.damus.io`, `wss://nos.lol`
-- **Live signing form (NIP-07):** https://renaissancemachine.ai/signum-test/index.html
-- **Live signature wall:** https://renaissancemachine.ai/signum-test/signature-wall.html
+- **Live signing form (NIP-07):** https://renaissancemachine.ai/signum-reference/index.html
+- **Live signature wall:** https://renaissancemachine.ai/signum-reference/signature-wall.html
 
 See [`examples/example-petition.md`](examples/example-petition.md) for the full
 petition text, sponsor pubkey, canonical `content_hash`, and live coordinates.
