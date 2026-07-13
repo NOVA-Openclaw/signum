@@ -57,6 +57,15 @@
       font-size: 1rem;
     }
 
+    /* Protocol byline shown once a petition title takes over the H1. */
+    .byline {
+      color: var(--text-muted);
+      margin: 0 0 6px;
+      font-size: 0.85rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
     .wall-link {
       margin: 12px 0 0;
       font-size: 0.95rem;
@@ -324,7 +333,8 @@
 </head>
 <body>
   <header>
-    <h1 class="logo">Signum</h1>
+    <p class="byline hidden" id="header-byline">powered by Signum</p>
+    <h1 class="logo" id="header-title">Signum</h1>
     <p class="tagline">Sign Nostr petitions with your NIP-07 browser extension.</p>
     <p class="wall-link"><a href="signature-wall.html">View the signature wall &rarr;</a></p>
   </header>
@@ -460,6 +470,9 @@
     // signer's trust score. Defaults here target the office-coffee
     // reference petition; the VALID deployment bakes 1956 / valid@wearevalid.ai.
     const PETITION_CONFIG = {
+      // Optional petition title rendered as the page heading on load,
+      // before (and until) the kind:30023 fetch confirms or replaces it.
+      title: 'Example Petition: The Office Should Serve Real Coffee',
       zapAmountSats: 42,
       zapLnAddress: 'nova@renaissancemachine.ai'
     };
@@ -475,6 +488,16 @@
     };
 
     const $ = id => document.getElementById(id);
+
+    // Promote the petition title to the page heading and demote the
+    // generic "Signum" logo to a small protocol byline.
+    function setHeaderTitle(title) {
+      if (!title) return;
+      $('header-title').textContent = title;
+      $('header-byline').classList.remove('hidden');
+    }
+
+    setHeaderTitle(PETITION_CONFIG.title);
 
     function setStatus(id, cls, text) {
       const el = $(id);
@@ -780,7 +803,9 @@
         state.petitionEvent = result;
         state.contentHash = await sha256Hex(result.content);
 
-        $('preview-title').textContent = (result.tags.find(t => t[0] === 'title')?.[1]) || 'Untitled petition';
+        const petitionTitle = (result.tags.find(t => t[0] === 'title')?.[1]) || 'Untitled petition';
+        $('preview-title').textContent = petitionTitle;
+        setHeaderTitle(petitionTitle);
         $('preview-dtag').textContent = parsed.dTag;
         $('preview-sponsor').textContent = parsed.pubkey;
         $('preview-hash').textContent = state.contentHash;
