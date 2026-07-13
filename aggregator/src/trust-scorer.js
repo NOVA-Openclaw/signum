@@ -46,7 +46,7 @@ export class TrustScorer {
 
       const followDistance = followDistances.get(pubkey) ?? -1;
       const followScore = this._distanceToScore(followDistance);
-      const zapScore = this._scoreZap(sig.id);
+      const zapScore = this._scoreZap(sig.id, sig.pubkey);
       const nip85Score = this._scoreNip85(pubkey);
 
       const breakdown = {
@@ -165,9 +165,14 @@ export class TrustScorer {
     }
   }
 
-  _scoreZap(signatureEventId) {
+  _scoreZap(signatureEventId, signerPubkey) {
+    // Only a self-zap reinforces the signature: the stored receipt's
+    // sender_pubkey (from the validated embedded zap request) must match
+    // the signer's pubkey. Third-party zaps do not count.
     const receipts = this.db.getZapReceiptsForSignature(signatureEventId);
-    return receipts.length > 0 ? 100 : 0;
+    return receipts.some((r) => r.sender_pubkey && r.sender_pubkey === signerPubkey)
+      ? 100
+      : 0;
   }
 
   _scoreNip85(pubkey) {
@@ -218,7 +223,7 @@ export class TrustScorer {
         'NIP-05 verifies the signer\'s declared identifier resolves to their pubkey. ' +
         'Follow distance is the shortest hop from a curated seed pubkey to the signer via kind:3 follows (cap 3). ' +
         'History scores account age, event count, and kind diversity. ' +
-        'Zap verification checks for kind:9735 receipts referencing the signature event. ' +
+        'Zap verification checks for kind:9735 receipts referencing the signature event whose validated embedded zap request (kind:9734) was signed by the signer themselves — a self-zap reinforcement; third-party zaps are not credited. ' +
         'NIP-85 pulls trust assertions from the configured provider.'
     };
   }

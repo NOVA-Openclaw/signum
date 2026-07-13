@@ -875,6 +875,106 @@
       });
     }
 
+    // ── NIP-07 signing helpers (shared: signature + zap request paths) ──
+
+    // Await getPublicKey() before signing even though templates stay
+    // bare: it forces the extension's unlock/decrypt flow to complete
+    // BEFORE signEvent is called (NostrKey returns an error object from
+    // signEvent while locked). Note: per NIP-07 the unsigned template
+    // must be minimal — kind, created_at, tags, content ONLY. Do not add
+    // pubkey to the template; some extensions reject templates carrying
+    // unexpected fields.
+    async function refreshPubkey() {
+      try {
+        const pk = await state.nostr.getPublicKey();
+        if (pk) state.pubkey = pk;
+      } catch (e) {
+        console.warn('getPublicKey failed before signing:', e);
+      }
+    }
+
+    // Normalize the various signEvent return shapes seen across
+    // NIP-07 extensions. Returns:
+    //   { error: '<detail>' }  — extension handed back an error object
+    //   { event: {...} }       — usable result merged over our template
+    //   null                   — no object at all
+    function normalizeSigned(raw, template) {
+      let s = raw;
+      if (s && !s.sig && s.event && s.event.sig) s = s.event;
+      if (!s || typeof s !== 'object') return null;
+      // An error/message key without a sig means the extension
+      // returned an error object, not a signed event. Surface it.
+      if (!s.sig && (s.error !== undefined || s.message !== undefined)) {
+        console.error('signEvent returned an error object:', JSON.stringify(raw));
+        const detail = [s.error, s.message]
+          .filter(v => v !== undefined && v !== null && v !== '')
+          .map(v => typeof v === 'string' ? v : JSON.stringify(v))
+          .join(' — ');
+        return { error: detail || 'unknown extension error (see console)' };
+      }
+      if (!s.sig) {
+        console.error('signEvent returned an incomplete result:', JSON.stringify(raw));
+      }
+      // Merge partial returns (sig-only / sig+id) over our template.
+      return { event: { ...template, ...s } };
+    }
+
+    // Sign a bare NIP-07 template with unlock pre-flight, return-shape
+    // normalization, and one retry (the unlock prompt can race the first
+    // signEvent call). Throws a descriptive error on failure; returns a
+    // complete signed event (pubkey backfilled, id computed/verified).
+    async function robustSignEvent(template) {
+      if (!state.nostr) throw new Error('NIP-07 extension not available.');
+      await refreshPubkey();
+      let res = normalizeSigned(await state.nostr.signEvent(template), template);
+
+      // If the result is unusable, the keys may have been locked when
+      // signEvent ran and the unlock prompt raced us. Re-await
+      // getPublicKey (completes the unlock flow) and retry once.
+      if (!res || res.error || !res.event.sig) {
+        console.warn('signEvent attempt failed; retrying after unlock…');
+        await refreshPubkey();
+        res = normalizeSigned(await state.nostr.signEvent(template), template);
+      }
+
+      if (!res) {
+        throw new Error('Extension returned no event object.');
+      }
+      if (res.error) {
+        throw new Error('Extension error: ' + res.error);
+      }
+
+      const signed = res.event;
+      // Template is bare per NIP-07, so backfill pubkey from
+      // getPublicKey() if the extension did not include it.
+      if (!signed.pubkey && state.pubkey) signed.pubkey = state.pubkey;
+
+      // sig is the one thing only the extension can produce.
+      if (!signed.sig) {
+        const missing = ['id', 'pubkey', 'sig'].filter(k => !signed[k]);
+        throw new Error(
+          'Extension returned an incomplete event (missing: ' +
+          missing.join(', ') + '). Raw keys: ' + Object.keys(signed).join(', ') +
+          '. If your extension was locked, unlock it and try again.'
+        );
+      }
+      if (!signed.pubkey) {
+        throw new Error(
+          'Extension returned an incomplete event (missing: pubkey) and ' +
+          'getPublicKey() did not provide one.'
+        );
+      }
+
+      // If id is missing, compute it ourselves (NIP-01 serialization).
+      const expectedId = getEventHash(signed);
+      if (!signed.id) {
+        signed.id = expectedId;
+      } else if (signed.id !== expectedId) {
+        throw new Error('Event ID mismatch after signing.');
+      }
+      return signed;
+    }
+
     async function signAndPublish() {
       if (!state.petitionEvent || !state.contentHash) {
         alert('Fetch a petition first.');
@@ -909,96 +1009,7 @@
 
       try {
         const event = buildSignatureEvent();
-
-        // Await getPublicKey() before signing even though the template
-        // stays bare: it forces the extension's unlock/decrypt flow to
-        // complete BEFORE signEvent is called (NostrKey returns an error
-        // object from signEvent while locked). Note: per NIP-07 the
-        // unsigned template must be minimal — kind, created_at, tags,
-        // content ONLY. Do not add pubkey to the template; some
-        // extensions reject templates carrying unexpected fields.
-        async function refreshPubkey() {
-          try {
-            const pk = await state.nostr.getPublicKey();
-            if (pk) state.pubkey = pk;
-          } catch (e) {
-            console.warn('getPublicKey failed before signing:', e);
-          }
-        }
-
-        // Normalize the various signEvent return shapes seen across
-        // NIP-07 extensions. Returns:
-        //   { error: '<detail>' }  — extension handed back an error object
-        //   { event: {...} }       — usable result merged over our template
-        //   null                   — no object at all
-        function normalizeSigned(raw) {
-          let s = raw;
-          if (s && !s.sig && s.event && s.event.sig) s = s.event;
-          if (!s || typeof s !== 'object') return null;
-          // An error/message key without a sig means the extension
-          // returned an error object, not a signed event. Surface it.
-          if (!s.sig && (s.error !== undefined || s.message !== undefined)) {
-            console.error('signEvent returned an error object:', JSON.stringify(raw));
-            const detail = [s.error, s.message]
-              .filter(v => v !== undefined && v !== null && v !== '')
-              .map(v => typeof v === 'string' ? v : JSON.stringify(v))
-              .join(' — ');
-            return { error: detail || 'unknown extension error (see console)' };
-          }
-          if (!s.sig) {
-            console.error('signEvent returned an incomplete result:', JSON.stringify(raw));
-          }
-          // Merge partial returns (sig-only / sig+id) over our template.
-          return { event: { ...event, ...s } };
-        }
-
-        await refreshPubkey();
-        let res = normalizeSigned(await state.nostr.signEvent(event));
-
-        // If the result is unusable, the keys may have been locked when
-        // signEvent ran and the unlock prompt raced us. Re-await
-        // getPublicKey (completes the unlock flow) and retry once.
-        if (!res || res.error || !res.event.sig) {
-          console.warn('signEvent attempt failed; retrying after unlock…');
-          await refreshPubkey();
-          res = normalizeSigned(await state.nostr.signEvent(event));
-        }
-
-        if (!res) {
-          throw new Error('Extension returned no event object.');
-        }
-        if (res.error) {
-          throw new Error('Extension error: ' + res.error);
-        }
-
-        let signed = res.event;
-        // Template is bare per NIP-07, so backfill pubkey from
-        // getPublicKey() if the extension did not include it.
-        if (!signed.pubkey && state.pubkey) signed.pubkey = state.pubkey;
-
-        // sig is the one thing only the extension can produce.
-        if (!signed.sig) {
-          const missing = ['id', 'pubkey', 'sig'].filter(k => !signed[k]);
-          throw new Error(
-            'Extension returned an incomplete event (missing: ' +
-            missing.join(', ') + '). Raw keys: ' + Object.keys(signed).join(', ') +
-            '. If your extension was locked, unlock it and try again.'
-          );
-        }
-        if (!signed.pubkey) {
-          throw new Error(
-            'Extension returned an incomplete event (missing: pubkey) and ' +
-            'getPublicKey() did not provide one.'
-          );
-        }
-
-        // If id is missing, compute it ourselves (NIP-01 serialization).
-        const expectedId = getEventHash(signed);
-        if (!signed.id) {
-          signed.id = expectedId;
-        } else if (signed.id !== expectedId) {
-          throw new Error('Event ID mismatch after signing.');
-        }
+        const signed = await robustSignEvent(event);
 
         $('result-summary').innerHTML = `
           <strong>Event signed.</strong><br>
@@ -1104,6 +1115,12 @@
         });
       });
       return btn;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
     }
 
     function njumpFallback(box, evt, prefixMsg) {
@@ -1242,6 +1259,152 @@
       refreshZapStatus();
     }
 
+    // Fetch an invoice from the LNURL-pay callback. `nostrParam` (a
+    // JSON-serialized signed kind:9734 zap request) makes it a zap;
+    // omitting it yields a plain, non-creditable invoice. Surfaces the
+    // service's own error `reason` when the callback returns one
+    // ({status:"ERROR", reason:"..."}) instead of a generic message.
+    async function fetchZapInvoice(lnurl, sendMsats, nostrParam) {
+      const cb = new URL(lnurl.callback);
+      cb.searchParams.set('amount', String(sendMsats));
+      if (nostrParam) cb.searchParams.set('nostr', nostrParam);
+      const r = await fetch(cb.toString());
+      let j = null;
+      try { j = await r.json(); } catch {}
+      if (j && typeof j.status === 'string' && j.status.toLowerCase() === 'error') {
+        throw new Error(j.reason || 'lightning service returned an error');
+      }
+      if (!j || !j.pr) throw new Error('no invoice returned (HTTP ' + r.status + ')');
+      return j.pr;
+    }
+
+    // Render an invoice through the payment lanes. `credited: true` is
+    // the zap-request path (a kind:9735 receipt is expected, so the
+    // receipt watcher runs); `credited: false` is an explicit plain
+    // donation — no receipt will ever come, so no watcher, and a
+    // persistent not-credited note is shown instead.
+    async function presentZapInvoice(box, evt, invoice, amount, { credited, knownIds }) {
+      const creditNote = credited
+        ? `<div class="muted">Your symbolic zap reinforces your signature's trust score.</div>`
+        : `<div class="muted">This payment is a plain donation — it will <strong>not</strong> be credited to your signature's trust score.</div>`;
+
+      // Lane A: WebLN one-click pay (Alby, etc.).
+      if (typeof window.webln !== 'undefined') {
+        try {
+          await window.webln.enable();
+          await window.webln.sendPayment(invoice);
+          box.classList.remove('hidden');
+          box.innerHTML =
+            `<strong style="color:var(--green)">⚡ ${credited ? 'Zap' : 'Payment'} sent — thank you!</strong>` +
+            creditNote;
+          if (credited) refreshZapStatus();
+          return;
+        } catch (e) {
+          console.warn('WebLN declined/failed, showing manual invoice:', e);
+        }
+      }
+
+      // Lane B: manual — invoice QR + copy, plus native-client lane C.
+      box.classList.remove('hidden');
+      box.innerHTML = '';
+      const h = document.createElement('strong');
+      h.textContent = credited
+        ? `Zap ${amount} sats`
+        : `Pay ${amount} sats — not credited`;
+      box.appendChild(h);
+      if (!credited) {
+        const warn = document.createElement('div');
+        warn.style.cssText = 'margin:6px 0 0;color:var(--yellow)';
+        warn.innerHTML = 'This payment will <strong>not</strong> be credited to your ' +
+          'signature\'s trust score — it is a plain donation without a zap receipt.';
+        box.appendChild(warn);
+      }
+      const p = document.createElement('div');
+      p.className = 'muted';
+      p.style.margin = '6px 0 12px';
+      p.textContent = 'Scan or copy this Lightning invoice to pay from any wallet:';
+      box.appendChild(p);
+      const qrWrap = document.createElement('div');
+      box.appendChild(qrWrap);
+      renderQr(qrWrap, invoice.toUpperCase());
+      const code = document.createElement('div');
+      code.style.margin = '12px 0';
+      code.innerHTML = `<code>${invoice}</code>`;
+      box.appendChild(code);
+      const row = document.createElement('div');
+      row.className = 'actions';
+      row.appendChild(copyButton(invoice, 'Copy invoice'));
+      const nj = document.createElement('a');
+      nj.href = njumpLink(evt); nj.target = '_blank'; nj.rel = 'noopener';
+      nj.className = 'btn-secondary';
+      nj.style.textDecoration = 'none';
+      nj.textContent = 'Zap on njump ↗';
+      row.appendChild(nj);
+      box.appendChild(row);
+      if (credited) {
+        startZapWatch(box, knownIds);
+      } else {
+        const note = document.createElement('div');
+        note.className = 'muted';
+        note.style.marginTop = '12px';
+        note.textContent = 'Plain invoices produce no zap receipt, so this page cannot ' +
+          'confirm the payment — thank you for the donation!';
+        box.appendChild(note);
+      }
+    }
+
+    // Explicit signing-failure UX: NEVER silently fall back to a plain
+    // (non-creditable) invoice. The signer sees what failed and chooses:
+    // retry the zap request, knowingly pay uncredited, or zap natively.
+    function renderZapSignFailure(box, evt, lnurl, sendMsats, amount, knownIds, detail) {
+      stopZapWatch();
+      box.classList.remove('hidden');
+      box.innerHTML =
+        `<strong style="color:var(--red)">⚠️ Zap request signing failed</strong>` +
+        `<div class="muted" style="margin:6px 0 12px">${escapeHtml(detail)}<br>` +
+        `Without a signed zap request, a plain Lightning payment will <strong>NOT</strong> ` +
+        `be credited to your signature's trust score.</div>`;
+      const row = document.createElement('div');
+      row.className = 'actions';
+
+      const retry = document.createElement('button');
+      retry.className = 'btn-primary';
+      retry.textContent = 'Try again';
+      retry.addEventListener('click', () => doZap());
+      row.appendChild(retry);
+
+      const payAnyway = document.createElement('button');
+      payAnyway.className = 'btn-secondary';
+      payAnyway.textContent = 'Pay anyway — not credited';
+      payAnyway.addEventListener('click', async () => {
+        payAnyway.disabled = true;
+        stopZapWatch();
+        try {
+          const invoice = await fetchZapInvoice(lnurl, sendMsats, null);
+          await presentZapInvoice(box, evt, invoice, amount, { credited: false, knownIds });
+        } catch (err) {
+          njumpFallback(box, evt,
+            `Could not fetch a plain invoice (${err.message}). You can still zap your signature natively:`);
+          startZapWatch(box, knownIds);
+        } finally {
+          payAnyway.disabled = false;
+        }
+      });
+      row.appendChild(payAnyway);
+
+      const nj = document.createElement('a');
+      nj.href = njumpLink(evt); nj.target = '_blank'; nj.rel = 'noopener';
+      nj.className = 'btn-secondary';
+      nj.style.textDecoration = 'none';
+      nj.textContent = 'Zap on njump ↗';
+      row.appendChild(nj);
+
+      box.appendChild(row);
+      // Native zaps (njump lane) DO produce kind:9735 receipts — keep
+      // watching so that path still gets a payment acknowledgment.
+      startZapWatch(box, knownIds);
+    }
+
     async function doZap() {
       const evt = state.existingSignature;
       if (!evt) { alert('Sign the petition before zapping.'); return; }
@@ -1269,10 +1432,18 @@
         const max = lnurl.maxSendable ?? 100000000;
         const sendMsats = Math.max(min, Math.min(max, amountMsats));
 
-        let invoice = null;
-        // NIP-57 zap request — creditable receipt path (server must be
-        // nostr-enabled: allowsNostr + nostrPubkey).
-        if (lnurl.allowsNostr && lnurl.nostrPubkey && state.nostr) {
+        // NIP-57 zap request — the ONLY path that produces a creditable
+        // kind:9735 receipt (server must be nostr-enabled: allowsNostr +
+        // nostrPubkey). If a signed request cannot be obtained, the signer
+        // gets an explicit choice — never a silent plain-invoice fallback.
+        let signErr = null;
+        let signedReq = null;
+        if (!lnurl.allowsNostr || !lnurl.nostrPubkey) {
+          signErr = 'The lightning service does not support Nostr zaps ' +
+            '(missing allowsNostr/nostrPubkey), so no creditable zap receipt can be produced.';
+        } else if (!state.nostr) {
+          signErr = 'No NIP-07 Nostr extension detected — the zap request cannot be signed.';
+        } else {
           const zapReq = {
             kind: 9734,
             created_at: Math.floor(Date.now() / 1000),
@@ -1285,76 +1456,21 @@
               ['p', recipientPubkey || lnurl.nostrPubkey]
             ]
           };
-          let signedReq = null;
           try {
-            const raw = await state.nostr.signEvent(zapReq);
-            signedReq = raw && raw.sig ? raw : (raw && raw.event && raw.event.sig ? raw.event : null);
-          } catch (e) { console.warn('zap request sign failed:', e); }
-          if (signedReq && signedReq.sig) {
-            const cb = new URL(lnurl.callback);
-            cb.searchParams.set('amount', String(sendMsats));
-            cb.searchParams.set('nostr', JSON.stringify(signedReq));
-            const r = await fetch(cb.toString());
-            const j = await r.json();
-            invoice = j.pr || null;
-          }
-        }
-        // Soft fallback: plain LNURL invoice (no nostr receipt, not credited
-        // by the aggregator, but still lets the user pay symbolically).
-        if (!invoice) {
-          const cb = new URL(lnurl.callback);
-          cb.searchParams.set('amount', String(sendMsats));
-          const r = await fetch(cb.toString());
-          const j = await r.json();
-          invoice = j.pr || null;
-        }
-        if (!invoice) throw new Error('no invoice returned');
-
-        // Lane A: WebLN one-click pay (Alby, etc.).
-        if (typeof window.webln !== 'undefined') {
-          try {
-            await window.webln.enable();
-            await window.webln.sendPayment(invoice);
-            box.classList.remove('hidden');
-            box.innerHTML =
-              `<strong style="color:var(--green)">⚡ Zap sent — thank you!</strong>` +
-              `<div class="muted">Your symbolic zap reinforces your signature's trust score.</div>`;
-            refreshZapStatus();
-            return;
+            signedReq = await robustSignEvent(zapReq);
           } catch (e) {
-            console.warn('WebLN declined/failed, showing manual invoice:', e);
+            console.warn('zap request sign failed:', e);
+            signErr = e.message || String(e);
           }
         }
 
-        // Lane B: manual — invoice QR + copy, plus native-client lane C.
-        box.classList.remove('hidden');
-        box.innerHTML = '';
-        const h = document.createElement('strong');
-        h.textContent = `Zap ${amount} sats`;
-        box.appendChild(h);
-        const p = document.createElement('div');
-        p.className = 'muted';
-        p.style.margin = '6px 0 12px';
-        p.textContent = 'Scan or copy this Lightning invoice to pay from any wallet:';
-        box.appendChild(p);
-        const qrWrap = document.createElement('div');
-        box.appendChild(qrWrap);
-        renderQr(qrWrap, invoice.toUpperCase());
-        const code = document.createElement('div');
-        code.style.margin = '12px 0';
-        code.innerHTML = `<code>${invoice}</code>`;
-        box.appendChild(code);
-        const row = document.createElement('div');
-        row.className = 'actions';
-        row.appendChild(copyButton(invoice, 'Copy invoice'));
-        const nj = document.createElement('a');
-        nj.href = njumpLink(evt); nj.target = '_blank'; nj.rel = 'noopener';
-        nj.className = 'btn-secondary';
-        nj.style.textDecoration = 'none';
-        nj.textContent = 'Zap on njump ↗';
-        row.appendChild(nj);
-        box.appendChild(row);
-        startZapWatch(box, knownIds);
+        if (!signedReq) {
+          renderZapSignFailure(box, evt, lnurl, sendMsats, amount, knownIds, signErr);
+          return;
+        }
+
+        const invoice = await fetchZapInvoice(lnurl, sendMsats, JSON.stringify(signedReq));
+        await presentZapInvoice(box, evt, invoice, amount, { credited: true, knownIds });
       } catch (err) {
         njumpFallback(box, evt,
           `Automatic zap unavailable (${err.message}). You can still zap your signature natively:`);

@@ -9,7 +9,7 @@ Reference aggregator for the [Signum petition protocol](../spec/NIP-1791.md) on 
    - NIP-05 identifier verification
    - Follow-distance from a curated seed pubkey set via `kind:3`
    - Account history (age, event count, kind diversity)
-   - Zap receipts (`kind:9735`) referencing the signature event
+   - Self-zap receipts (`kind:9735`) referencing the signature event, sent by the signer themselves
    - NIP-85 trust assertions from `nip85.nostr.band`
 3. **Output** — writes `signatures.json` with two sort orders (chronological and trust-weighted) plus metadata and methodology.
 
@@ -116,7 +116,7 @@ Each signature object:
 - **NIP-05** — fetches `https://<domain>/.well-known/nostr.json?name=<name>` and verifies the resolved pubkey matches the signer. Score: 0 or 100.
 - **Follow distance** — BFS from `seed_pubkeys` through `kind:3` follow lists. Cap at depth 3. Score: 1-hop=90, 2-hop=60, 3-hop=30, unreachable=0.
 - **Account history** — samples up to 500 events from the signer across common kinds. Score rises with account age, event count, and kind diversity.
-- **Zap verification** — checks for `kind:9735` zap receipts that reference the signature event id. Score: 0 or 100.
+- **Zap verification** — checks for `kind:9735` zap receipts that reference the signature event id. Each receipt's `description` tag must contain a valid, signature-verified embedded `kind:9734` zap request; receipts without one are discarded. The zap only counts when the embedded request's pubkey matches the signer's pubkey (self-zap reinforcement) — third-party zaps are not credited. Score: 0 or 100.
 - **NIP-85 assertions** — queries `wss://nip85.nostr.band` for `kind:30382` trust assertions about the signer from the configured provider. Uses the published score or 50 if none present.
 
 Composite score is the weighted average of available sub-scores.

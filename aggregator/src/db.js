@@ -82,6 +82,7 @@ export class SignumDatabase {
         event_id TEXT PRIMARY KEY,
         signature_event_id TEXT NOT NULL,
         recipient_pubkey TEXT,
+        sender_pubkey TEXT,
         amount_msats INTEGER,
         raw_event TEXT NOT NULL,
         created_at INTEGER NOT NULL
@@ -102,7 +103,18 @@ export class SignumDatabase {
       CREATE INDEX IF NOT EXISTS idx_trust_subject ON trust_assertions(subject_pubkey);
     `);
 
+    this._migrate();
     this._prepareStatements();
+  }
+
+  _migrate() {
+    // Databases created before zap-sender validation lack the
+    // sender_pubkey column on zap_receipts. Add it in place so existing
+    // data files keep working (SQLite ALTER TABLE ADD COLUMN is cheap).
+    const zapCols = this.db.prepare('PRAGMA table_info(zap_receipts)').all();
+    if (!zapCols.some((c) => c.name === 'sender_pubkey')) {
+      this.db.exec('ALTER TABLE zap_receipts ADD COLUMN sender_pubkey TEXT');
+    }
   }
 
   _prepareStatements() {
@@ -166,11 +178,12 @@ export class SignumDatabase {
       `),
       getFollowGraph: this.db.prepare('SELECT pubkey, follows FROM follow_graph'),
       upsertZapReceipt: this.db.prepare(`
-        INSERT INTO zap_receipts (event_id, signature_event_id, recipient_pubkey, amount_msats, raw_event, created_at)
-        VALUES (:event_id, :signature_event_id, :recipient_pubkey, :amount_msats, :raw_event, :created_at)
+        INSERT INTO zap_receipts (event_id, signature_event_id, recipient_pubkey, sender_pubkey, amount_msats, raw_event, created_at)
+        VALUES (:event_id, :signature_event_id, :recipient_pubkey, :sender_pubkey, :amount_msats, :raw_event, :created_at)
         ON CONFLICT(event_id) DO UPDATE SET
           signature_event_id = excluded.signature_event_id,
           recipient_pubkey = excluded.recipient_pubkey,
+          sender_pubkey = excluded.sender_pubkey,
           amount_msats = excluded.amount_msats,
           raw_event = excluded.raw_event,
           created_at = excluded.created_at

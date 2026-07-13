@@ -222,16 +222,43 @@ export class RelayPoller {
       const events = await this._queryRelays({ kinds: [9735], '#e': batch }, 'zap-receipts');
       for (const event of events) {
         if (!verifyEvent(event)) continue;
+        // NIP-57: the receipt's `description` tag embeds the signed
+        // kind:9734 zap request. A receipt without a valid, signature-
+        // verified embedded request cannot prove WHO sent the zap, so it
+        // is not creditable — skip it entirely.
+        const description = getTag(event, 'description');
+        let zapRequest = null;
+        try {
+          zapRequest = description ? JSON.parse(description) : null;
+        } catch {
+          zapRequest = null;
+        }
+        let requestValid = false;
+        try {
+          requestValid = !!zapRequest && zapRequest.kind === 9734 && verifyEvent(zapRequest);
+        } catch {
+          requestValid = false;
+        }
+        if (!requestValid) {
+          console.warn(`[poller] Skipping zap receipt ${event.id}: missing or invalid embedded zap request (description tag)`);
+          continue;
+        }
         const sigId = getTag(event, 'e');
-        const bolt11Tag = event.tags.find((t) => t[0] === 'bolt11');
-        let amountMsats = 0;
-        if (bolt11Tag && bolt11Tag[1]) {
-          amountMsats = this._decodeBolt11Amount(bolt11Tag[1]);
+        // Prefer the amount declared in the embedded zap request (msats);
+        // fall back to the bolt11 heuristic for receipts without one.
+        const amountTag = zapRequest.tags.find((t) => t[0] === 'amount')?.[1];
+        let amountMsats = amountTag && /^\d+$/.test(amountTag) ? Number(amountTag) : 0;
+        if (!amountMsats) {
+          const bolt11Tag = event.tags.find((t) => t[0] === 'bolt11');
+          if (bolt11Tag && bolt11Tag[1]) {
+            amountMsats = this._decodeBolt11Amount(bolt11Tag[1]);
+          }
         }
         const receipt = {
           event_id: event.id,
           signature_event_id: sigId,
           recipient_pubkey: event.tags.find((t) => t[0] === 'p')?.[1] || '',
+          sender_pubkey: zapRequest.pubkey,
           amount_msats: amountMsats,
           raw_event: JSON.stringify(event),
           created_at: event.created_at
