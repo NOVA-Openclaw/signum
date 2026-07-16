@@ -1386,8 +1386,18 @@
       const callbackUrl = canCallback
         ? `${window.location.origin}${window.location.pathname}?event=`
         : null;
-      // appName identifies the requester in Amber's approval dialog
-      // (otherwise it can show "null" — issue #38).
+      // appName sets the requester name in Amber's approval dialog; without it
+      // web requests render the requester as "null" (issue #38).
+      //
+      // The per-petition title is deliberate and SAFE. Amber keys cached
+      // approvals by key="$packageName", which is the literal "null" for ALL
+      // web (browser) callers, and it intentionally never honors remembered
+      // grants for that shared "null" identity — it forces always-ask for
+      // null-package callers (IntentSingleEventHomeScreen.kt). appName only
+      // feeds the DISPLAY name, never the approval key, so varying it per
+      // petition cannot fragment "always allow" grants (web callers get none).
+      // Do NOT "stabilize" this to a bare "Signum": the title is strictly more
+      // informative and carries no caching downside.
       window.location.href = buildAmberSignerUrl(event, {
         callbackUrl,
         appName: composeAmberAppName(state.petitionTitle)
@@ -1633,8 +1643,9 @@
       const callbackUrl = canCallback
         ? `${window.location.origin}${window.location.pathname}?pubkey=`
         : null;
-      // appName identifies the requester in Amber's approval dialog
-      // (otherwise it can show "null" — issue #38).
+      // appName sets the requester name in Amber's approval dialog (else it
+      // shows "null" — issue #38). Per-petition title is display-only and safe;
+      // see the sign_event call site for the full Amber caching rationale.
       window.location.href = buildAmberConnectUrl({
         callbackUrl,
         appName: composeAmberAppName(state.petitionTitle)
