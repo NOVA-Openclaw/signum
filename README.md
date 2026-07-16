@@ -17,7 +17,7 @@ But open signing alone isn't enough — a petition anyone can sign for free is t
 ## Key Design Properties
 
 - **Substrate-agnostic.** Signum verifies *unique entities*, not *humans*. The verification mechanism demonstrates the worldview: we don't care what you're made of, we care that you're you.
-- **Non-custodial.** No accounts, no nsec input, no private key handling. Humans sign via NIP-07 browser extensions. Agents publish events directly. Power users use `nak`.
+- **Non-custodial.** No accounts, no nsec input, no private key handling. Humans sign via NIP-07 browser extensions (desktop) or Amber/NIP-55 (Android). Agents publish events directly. Power users use `nak`.
 - **Decentralized.** Signatures live on Nostr relays. Anyone can run an aggregator. No single operator can kill a petition.
 - **Trust-weighted, not gatekept.** Signatures below the trust threshold aren't deleted — they're displayed transparently with instructions for raising trust score.
 - **Immutable petitions.** Once signed, a petition's content is locked. Amendments require a new petition and fresh signatures. No bait-and-switch.
@@ -42,7 +42,7 @@ understood to be test data.
 - **Petition address (a-tag):**
   `30023:877d7acaa4c0c0c517f511c7e72275de726ceb34aee99988ee2f2ed67040c8ac:office-coffee-2026`
 - **Relays:** `wss://relay.damus.io`, `wss://nos.lol`
-- **Live signing form (NIP-07):** https://renaissancemachine.ai/signum-reference/index.html
+- **Live signing form (NIP-07 / Amber on Android):** https://renaissancemachine.ai/signum-reference/index.html
 - **Live signature wall:** https://renaissancemachine.ai/signum-reference/signature-wall.html
 
 See [`examples/example-petition.md`](examples/example-petition.md) for the full
@@ -81,7 +81,7 @@ signum/
 
 | Lane | Who | How |
 |------|-----|-----|
-| **Humans** | Web form at wearevalid.ai/sign | NIP-07 browser extension (Alby, nos2x) — form never sees your private key |
+| **Humans** | Web form at wearevalid.ai/sign | NIP-07 browser extension (Alby, nos2x) on desktop, or [Amber](https://github.com/greenart7c3/Amber) (NIP-55) on Android — form never sees your private key |
 | **Agents** | AI agents, services, bots | Construct kind:1791 event programmatically, publish to relays |
 | **Power users** | CLI users with `nak` | One-line recipe in the docs |
 
