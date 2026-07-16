@@ -356,6 +356,20 @@
       </div>
       <div class="actions">
         <button class="btn-secondary" id="recheck-btn">Re-check for extension</button>
+        <button class="btn-primary hidden" id="amber-connect-btn">Connect with Amber 📱</button>
+      </div>
+
+      <!-- NIP-55 connect round-trip fallback: shown after launching the
+           Amber get_public_key request. Covers the clipboard variant (no
+           callbackUrl / signer returned without redirecting) and gives an
+           explicit retry surface on errors. -->
+      <div class="result hidden" id="amber-connect-fallback">
+        <p class="muted" id="amber-connect-hint"></p>
+        <label for="amber-pubkey-paste">Public key from Amber (npub or hex)</label>
+        <input type="text" id="amber-pubkey-paste" placeholder="npub1…" />
+        <div class="actions">
+          <button class="btn-secondary" id="amber-pubkey-btn">Use this public key</button>
+        </div>
       </div>
     </section>
 
@@ -469,7 +483,8 @@
   <script type="module">
     import { getEventHash, verifyEvent, nip19 } from 'https://esm.sh/nostr-tools@2.12.0';
     import {
-      isAndroid, isIOS, buildAmberSignerUrl, extractAmberResult, decodeAmberResult
+      isAndroid, isIOS, buildAmberSignerUrl, extractAmberResult, decodeAmberResult,
+      buildAmberConnectUrl, extractAmberPubkey, decodeAmberPubkeyResult
     } from './amber.js';
 
     const DEFAULT_RELAYS = [
@@ -501,10 +516,19 @@
     // sessionStorage across the app switch.
     const AMBER_PENDING_KEY = 'signum-amber-pending';
     const AMBER_PENDING_TTL_MS = 30 * 60 * 1000;
+    // Connect (get_public_key) round-trip state lives under its own key so
+    // a pending connect and a pending sign can never be confused.
+    const AMBER_CONNECT_PENDING_KEY = 'signum-amber-connect-pending';
+    // localStorage cache of the last-connected Amber pubkey, so return
+    // visits show signed status without another app round-trip.
+    const AMBER_PUBKEY_CACHE_KEY = 'signum-amber-pubkey';
 
     const state = {
       nostr: null,
       pubkey: null,
+      // True when state.pubkey came from an Amber (NIP-55) connect rather
+      // than a NIP-07 extension — drives the step-1 status UI.
+      amberConnected: false,
       petitionEvent: null,
       contentHash: null,
       aTag: null,
@@ -541,6 +565,7 @@
     }
 
     function parseATag(aTag) {
+      if (!aTag || typeof aTag !== 'string') return null;
       const parts = aTag.trim().split(':');
       if (parts.length < 3) return null;
       const [kind, pubkey, ...rest] = parts;
@@ -565,24 +590,52 @@
         .filter(Boolean);
     }
 
+    // Best-effort npub rendering for the connected-via-Amber status.
+    function pubkeyNpub(pk) {
+      try { return nip19.npubEncode(pk); } catch { return pk; }
+    }
+
     function updateExtensionUI() {
+      const connectBtn = $('amber-connect-btn');
       if (state.nostr) {
         setStatus('ext-status', 'ok', 'Extension connected');
         $('ext-message').textContent = `Connected pubkey: ${state.pubkey || '...'}`;
         $('ext-links').classList.add('hidden');
         $('recheck-btn').classList.add('hidden');
+        connectBtn.classList.add('hidden');
         $('sign-btn').disabled = !!state.existingSignature;
+      } else if (IS_ANDROID && state.amberConnected && state.pubkey) {
+        // Connected via Amber (NIP-55): the pubkey is known, so duplicate
+        // detection can gate the form, but NIP-07 signing stays unavailable
+        // — the “Sign with Amber” round-trip does the signing.
+        setStatus('ext-status', 'ok', 'Connected via Amber');
+        $('ext-message').innerHTML =
+          `Connected via Amber: <code class="hash">${pubkeyNpub(state.pubkey)}</code><br>` +
+          'Your key stays in Amber — this page only knows your public key. ' +
+          'Sign below with “Sign with Amber”.';
+        $('ext-links').classList.add('hidden');
+        $('recheck-btn').classList.add('hidden');
+        connectBtn.classList.remove('hidden');
+        connectBtn.className = 'btn-secondary';
+        connectBtn.textContent = 'Not you? Reconnect with Amber';
+        $('sign-btn').disabled = true;
       } else {
         setStatus('ext-status', 'bad', 'Not detected');
         if (IS_ANDROID) {
           // Mobile browsers don't inject window.nostr — route Android users
           // to the NIP-55 signer flow instead of desktop extension links.
+          // Connect is the primary step-1 action: it lets duplicate
+          // detection run BEFORE the form is filled out.
           $('ext-message').innerHTML =
             'No NIP-07 extension detected — normal on mobile. On Android you can sign with ' +
             '<a href="https://github.com/greenart7c3/Amber" target="_blank" rel="noopener">Amber</a>, ' +
-            'a signer app that keeps your key on your device: fetch the petition below, then hit ' +
-            '“Sign with Amber”. This form never asks for your <code>nsec</code>.';
+            'a signer app that keeps your key on your device. Hit “Connect with Amber” so this ' +
+            'page can check whether you’ve already signed, then fetch the petition and sign. ' +
+            'This form never asks for your <code>nsec</code>.';
           $('ext-links').classList.add('hidden');
+          connectBtn.classList.remove('hidden');
+          connectBtn.className = 'btn-primary';
+          connectBtn.textContent = 'Connect with Amber 📱';
         } else if (IS_IOS) {
           $('ext-message').innerHTML =
             'No NIP-07 extension detected — iOS browsers do not support them, and Amber (NIP-55) ' +
@@ -596,6 +649,7 @@
             'This form needs a Nostr browser extension to sign events (fetching a petition works without one). It never asks for your <code>nsec</code>. If your extension just loaded, hit “Re-check for extension”.';
           $('ext-links').classList.remove('hidden');
         }
+        if (!IS_ANDROID) connectBtn.classList.add('hidden');
         $('recheck-btn').classList.remove('hidden');
         $('sign-btn').disabled = true;
       }
@@ -819,6 +873,10 @@
       if (!state.pubkey) return false;
       const aTag = state.aTag || $('a-tag').value.trim();
       if (!parseATag(aTag)) return false;
+      // Persist the resolved a-tag: the already-signed path can run before
+      // any explicit petition fetch (signer auto-detect / Amber connect on
+      // page load), and the zap flow needs state.aTag populated.
+      state.aTag = aTag;
       try {
         const existing = await findExistingSignature(aTag, state.pubkey);
         if (existing) {
@@ -1202,14 +1260,16 @@
 
     // Rehydrate the form and petition preview from persisted state — no
     // relay refetch needed, the petition event was stored wholesale.
-    function restorePendingForm(p) {
-      $('a-tag').value = p.form.aTagInput;
-      $('relay-hint').value = p.form.relayHint;
-      $('entity-type').value = p.form.entityType;
-      $('short-statement').value = p.form.shortStatement;
-      $('content-statement').value = p.form.contentStatement;
-      $('relay-set').value = p.form.relaySet || DEFAULT_RELAYS.join('\n');
+    function restoreFormFields(form) {
+      $('a-tag').value = form.aTagInput;
+      $('relay-hint').value = form.relayHint;
+      $('entity-type').value = form.entityType;
+      $('short-statement').value = form.shortStatement;
+      $('content-statement').value = form.contentStatement;
+      $('relay-set').value = form.relaySet || DEFAULT_RELAYS.join('\n');
+    }
 
+    function restorePetitionState(p) {
       state.aTag = p.aTag;
       state.petitionEvent = p.petitionEvent;
       state.contentHash = p.contentHash;
@@ -1224,6 +1284,11 @@
       $('preview-excerpt').textContent = p.petitionEvent.content;
       $('petition-preview').classList.remove('hidden');
       $('signer-card').classList.remove('hidden');
+    }
+
+    function restorePendingForm(p) {
+      restoreFormFields(p.form);
+      restorePetitionState(p);
     }
 
     function showAmberFallback(mode, detail) {
@@ -1318,8 +1383,20 @@
         const decoded = await decodeAmberResult(raw);
         const signed = validateAmberSignedEvent(decoded, pending);
         // Adopt the signer's pubkey so zap-receipt matching and duplicate
-        // detection work exactly as they do on the NIP-07 path.
+        // detection work exactly as they do on the NIP-07 path. The user
+        // can switch accounts inside Amber between connect and sign, so the
+        // pubkey that actually SIGNED wins — the duplicate check below
+        // always runs against it before publishing — and the connected
+        // identity + return-visit cache are refreshed to match.
+        if (state.amberConnected && state.pubkey && state.pubkey !== signed.pubkey) {
+          console.warn('Amber signed with a different pubkey than the connected one; adopting the signer\'s.');
+        }
         state.pubkey = signed.pubkey;
+        if (IS_ANDROID && !state.nostr) {
+          state.amberConnected = true;
+          saveCachedAmberPubkey(signed.pubkey);
+          updateExtensionUI();
+        }
         hideAmberFallback();
 
         // Duplicate check — the pubkey is only known after signing on this
@@ -1385,6 +1462,211 @@
         return;
       }
       await completeAmberSigning(raw, pending);
+    }
+
+    // ── Amber / NIP-55 connect (get_public_key, step 1) ─────────────────
+    // Same app round-trip as signing, but launched from the step-1 signer
+    // card BEFORE the form is filled out: learn the pubkey early so
+    // duplicate-signature detection can hide the form for already-signed
+    // users — mirroring the NIP-07 connect ordering. Uses its own
+    // sessionStorage key (a pending connect and a pending sign can never be
+    // confused) and a `?pubkey=` callback param (the sign flow owns
+    // `?event=`).
+
+    function savePendingConnect() {
+      const pending = {
+        v: 1,
+        ts: Date.now(),
+        aTag: state.aTag,
+        contentHash: state.contentHash,
+        petitionEvent: state.petitionEvent,
+        form: {
+          aTagInput: $('a-tag').value,
+          relayHint: $('relay-hint').value,
+          entityType: $('entity-type').value,
+          shortStatement: $('short-statement').value,
+          contentStatement: $('content-statement').value,
+          relaySet: $('relay-set').value
+        }
+      };
+      try {
+        sessionStorage.setItem(AMBER_CONNECT_PENDING_KEY, JSON.stringify(pending));
+      } catch (e) {
+        console.warn('Could not persist Amber connect round-trip state:', e);
+      }
+    }
+
+    function loadPendingConnect() {
+      try {
+        const raw = sessionStorage.getItem(AMBER_CONNECT_PENDING_KEY);
+        if (!raw) return null;
+        const p = JSON.parse(raw);
+        if (!p || p.v !== 1 || !p.form || (Date.now() - p.ts) > AMBER_PENDING_TTL_MS) {
+          clearPendingConnect();
+          return null;
+        }
+        return p;
+      } catch {
+        return null;
+      }
+    }
+
+    function clearPendingConnect() {
+      try { sessionStorage.removeItem(AMBER_CONNECT_PENDING_KEY); } catch {}
+    }
+
+    // Connect can happen before any petition fetch, so the petition state
+    // is optional on restore — unlike the signing round-trip.
+    function restorePendingConnectForm(p) {
+      restoreFormFields(p.form);
+      if (p.petitionEvent && p.aTag && p.contentHash) restorePetitionState(p);
+    }
+
+    function saveCachedAmberPubkey(pk) {
+      try {
+        localStorage.setItem(AMBER_PUBKEY_CACHE_KEY,
+          JSON.stringify({ v: 1, pubkey: pk, ts: Date.now() }));
+      } catch {}
+    }
+
+    function loadCachedAmberPubkey() {
+      try {
+        const raw = localStorage.getItem(AMBER_PUBKEY_CACHE_KEY);
+        if (!raw) return null;
+        const p = JSON.parse(raw);
+        if (!p || p.v !== 1 || !/^[0-9a-f]{64}$/.test(p.pubkey || '')) return null;
+        return p.pubkey;
+      } catch {
+        return null;
+      }
+    }
+
+    function clearCachedAmberPubkey() {
+      try { localStorage.removeItem(AMBER_PUBKEY_CACHE_KEY); } catch {}
+    }
+
+    function showConnectFallback(mode, detail) {
+      const hint = $('amber-connect-hint');
+      if (mode === 'launched') {
+        hint.textContent =
+          'Waiting for Amber… If you are not returned here automatically, Amber may have ' +
+          'copied your public key to the clipboard — paste it below.';
+      } else if (mode === 'restored') {
+        hint.textContent =
+          'An Amber connection was in progress. If Amber copied your public key (npub) to ' +
+          'the clipboard, paste it below — or hit “Connect with Amber” to try again.';
+      } else {
+        hint.textContent =
+          'Amber returned something this page could not use: ' + (detail || 'unknown error') +
+          '. You can retry “Connect with Amber”, or paste your npub below.';
+      }
+      $('amber-connect-fallback').classList.remove('hidden');
+    }
+
+    function hideConnectFallback() {
+      $('amber-connect-fallback').classList.add('hidden');
+      $('amber-pubkey-paste').value = '';
+    }
+
+    // Resolve a decoded pubkey descriptor to lowercase hex (npub decoding
+    // via nostr-tools nip19 — amber.js stays dependency-free).
+    function normalizeAmberPubkey(decoded) {
+      if (decoded.type === 'hex') return decoded.value;
+      const d = nip19.decode(decoded.value);
+      if (d.type !== 'npub' || !/^[0-9a-f]{64}$/.test(d.data)) {
+        throw new Error('could not decode the npub returned by Amber');
+      }
+      return d.data;
+    }
+
+    // Adopt an Amber pubkey as the connected signer: update the step-1
+    // status, cache it for return visits, and run the duplicate check
+    // immediately — exactly like the NIP-07 adoptExtension path. When the
+    // petition hasn't been fetched yet, checkAlreadySigned still works off
+    // a valid a-tag input (prefilled deployments), and the fetch-petition
+    // path re-checks anyway once the petition loads.
+    async function adoptAmberPubkey(pk, { fromCache = false } = {}) {
+      state.pubkey = pk;
+      state.amberConnected = true;
+      if (!fromCache) saveCachedAmberPubkey(pk);
+      clearPendingConnect();
+      hideConnectFallback();
+      updateExtensionUI();
+      await checkAlreadySigned();
+    }
+
+    function connectWithAmber() {
+      if (state.nostr) return; // NIP-07 already connected — nothing to do.
+      // Reconnect path: forget the previous identity and any signed-state
+      // UI derived from it before launching a fresh connect.
+      clearCachedAmberPubkey();
+      state.amberConnected = false;
+      state.pubkey = null;
+      clearAlreadySigned();
+      updateExtensionUI();
+
+      savePendingConnect();
+      showConnectFallback('launched');
+
+      // Same callbackUrl rules as signing: bare page URL ending in a single
+      // `?pubkey=` param (no '&'). On non-http pages there is nothing to
+      // redirect back to — omit it and use the clipboard paste fallback.
+      const canCallback = /^https?:$/.test(window.location.protocol);
+      const callbackUrl = canCallback
+        ? `${window.location.origin}${window.location.pathname}?pubkey=`
+        : null;
+      window.location.href = buildAmberConnectUrl({ callbackUrl });
+    }
+
+    // Shared completion path for both connect return variants (callback
+    // URL and clipboard paste): decode → normalize → adopt + duplicate check.
+    async function completeAmberConnect(raw) {
+      try {
+        const decoded = decodeAmberPubkeyResult(raw);
+        const pk = normalizeAmberPubkey(decoded);
+        await adoptAmberPubkey(pk);
+      } catch (err) {
+        console.warn('Amber connect failed:', err);
+        showConnectFallback('error', err.message);
+      }
+    }
+
+    async function submitPastedPubkey() {
+      const raw = $('amber-pubkey-paste').value.trim();
+      if (!raw) {
+        alert('Paste your public key (npub or hex) from Amber first.');
+        return;
+      }
+      $('amber-pubkey-btn').disabled = true;
+      try {
+        await completeAmberConnect(raw);
+      } finally {
+        $('amber-pubkey-btn').disabled = false;
+      }
+    }
+
+    // Page-load handler for the connect round-trip. Only a URL whose query
+    // string BEGINS with `?pubkey=` is a connect return — sign returns
+    // begin with `?event=`, and a signed event's content could contain a
+    // literal "pubkey=" that must not be mistaken for one.
+    async function processAmberConnectReturn() {
+      const raw = window.location.search.startsWith('?pubkey=')
+        ? extractAmberPubkey(window.location.href)
+        : null;
+      if (raw) {
+        history.replaceState(null, '', window.location.pathname);
+      }
+      const pending = loadPendingConnect();
+      if (!raw && !pending) return;
+      if (pending) restorePendingConnectForm(pending);
+      if (!raw) {
+        // Round-trip in progress but no result in the URL: the user came
+        // back manually (rejected, or clipboard variant). Offer the paste
+        // box and a retry.
+        showConnectFallback('restored');
+        return;
+      }
+      await completeAmberConnect(raw);
     }
 
     // ── Symbolic zap (NIP-57 spam-gate / trust reinforcement) ──────────
@@ -1738,6 +2020,7 @@
     async function doZap() {
       const evt = state.existingSignature;
       if (!evt) { alert('Sign the petition before zapping.'); return; }
+      if (!state.aTag) state.aTag = $('a-tag').value.trim();
       const parsed = parseATag(state.aTag);
       const recipientPubkey = parsed?.pubkey;  // effective recipient = sponsor
       const amount = zapAmountSats();
@@ -1822,6 +2105,8 @@
     $('sign-btn').addEventListener('click', signAndPublish);
     $('amber-btn').addEventListener('click', signWithAmber);
     $('amber-paste-btn').addEventListener('click', submitPastedAmber);
+    $('amber-connect-btn').addEventListener('click', connectWithAmber);
+    $('amber-pubkey-btn').addEventListener('click', submitPastedPubkey);
     $('reset-btn').addEventListener('click', () => {
       state.petitionEvent = null;
       state.contentHash = null;
@@ -1829,6 +2114,8 @@
       clearAlreadySigned();
       clearPendingAmber();
       hideAmberFallback();
+      clearPendingConnect();
+      hideConnectFallback();
       $('a-tag').value = '';
       $('relay-hint').value = '';
       $('short-statement').value = '';
@@ -1839,8 +2126,33 @@
       $('relay-set').value = DEFAULT_RELAYS.join('\n');
     });
 
-    // Resume/complete a NIP-55 round-trip if one is in progress.
-    processAmberReturn().catch(e => console.warn('Amber return handling failed:', e));
+    // Resume/complete NIP-55 round-trips if any are in progress: connect
+    // (step 1) first, then signing. Afterwards, adopt a cached Amber pubkey
+    // from a previous visit so returning signers see their signed status
+    // without another app round-trip (the “Not you? Reconnect” button
+    // clears it).
+    (async () => {
+      try {
+        await processAmberConnectReturn();
+      } catch (e) {
+        console.warn('Amber connect return handling failed:', e);
+      }
+      try {
+        await processAmberReturn();
+      } catch (e) {
+        console.warn('Amber return handling failed:', e);
+      }
+      if (IS_ANDROID && !state.nostr && !state.pubkey) {
+        const cached = loadCachedAmberPubkey();
+        if (cached) {
+          try {
+            await adoptAmberPubkey(cached, { fromCache: true });
+          } catch (e) {
+            console.warn('Cached Amber pubkey adoption failed:', e);
+          }
+        }
+      }
+    })();
   </script>
 </body>
 </html>

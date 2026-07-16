@@ -53,6 +53,31 @@ export function buildAmberSignerUrl(unsignedEvent, opts = {}) {
 }
 
 /**
+ * Build the `nostrsigner:` URL that asks a NIP-55 signer for the user's
+ * public key (the "connect" step, method `get_public_key`).
+ *
+ * The payload (URI path) is empty for get_public_key; only the query params
+ * matter. The same callbackUrl restriction as signing applies: it is
+ * appended to the query string unencoded, so it must not contain `&`. Use a
+ * callback URL with a single trailing `?pubkey=` parameter so the result
+ * can be extracted unambiguously (the sign flow uses `?event=`).
+ *
+ * @param {object} [opts]
+ * @param {string|null} [opts.callbackUrl] - URL the signer appends the pubkey
+ *   to; omit/null for the clipboard variant.
+ * @returns {string} nostrsigner: URL
+ */
+export function buildAmberConnectUrl(opts = {}) {
+  const { callbackUrl = null } = opts;
+  if (callbackUrl && callbackUrl.includes('&')) {
+    throw new Error('callbackUrl must not contain "&" (NIP-55 appends it unencoded)');
+  }
+  let url = 'nostrsigner:?type=get_public_key';
+  if (callbackUrl) url += `&callbackUrl=${callbackUrl}`;
+  return url;
+}
+
+/**
  * Extract the raw signer result appended to the callback URL.
  *
  * The signer appends the result directly after `event=`, and the result (an
@@ -68,6 +93,65 @@ export function extractAmberResult(href) {
   if (parts.length < 2) return null;
   const raw = parts.slice(1).join('&event=');
   return raw.length > 0 ? raw : null;
+}
+
+/**
+ * Extract the raw get_public_key result appended to the connect callback
+ * URL (`...?pubkey=<result>`). Same contract as extractAmberResult: the
+ * `pubkey=` parameter is the last thing in our callback URL, so everything
+ * after its first occurrence is the result, even when the signer appends
+ * unencoded JSON containing `&`, `=`, or `#`.
+ *
+ * @param {string} href - full window.location.href
+ * @returns {string|null} raw result string, or null when absent/empty
+ */
+export function extractAmberPubkey(href) {
+  const parts = String(href || '').split(/[?&]pubkey=/);
+  if (parts.length < 2) return null;
+  const raw = parts.slice(1).join('&pubkey=');
+  return raw.length > 0 ? raw : null;
+}
+
+/**
+ * Decode a NIP-55 get_public_key result into a pubkey descriptor.
+ *
+ * Signers return the pubkey as a plain string — hex or npub — possibly
+ * percent-encoded, and some wrap results in JSON objects
+ * (`{"result":"…"}` / `{"pubkey":"…"}` / `{"event":{"pubkey":"…"}}`).
+ * This helper stays dependency-free, so npub bech32 decoding is left to
+ * the caller (nostr-tools nip19 in the browser).
+ *
+ * @param {string} raw
+ * @returns {{type: 'hex'|'npub', value: string}} normalized descriptor:
+ *   hex values are lowercased; npub values are returned as-is for the
+ *   caller to decode.
+ */
+export function decodeAmberPubkeyResult(raw) {
+  let text = String(raw ?? '').trim();
+  if (!text) throw new Error('empty signer result');
+  if (/%[0-9a-fA-F]{2}/.test(text)) {
+    try { text = decodeURIComponent(text); } catch { /* keep as-is */ }
+  }
+  if (text.startsWith('{')) {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error('signer result is not valid JSON');
+    }
+    const candidate = parsed?.result ?? parsed?.pubkey ?? parsed?.event?.pubkey;
+    if (typeof candidate !== 'string' || !candidate.trim()) {
+      throw new Error('signer result object carries no pubkey');
+    }
+    text = candidate.trim();
+  }
+  if (/^[0-9a-fA-F]{64}$/.test(text)) {
+    return { type: 'hex', value: text.toLowerCase() };
+  }
+  if (/^npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{6,}$/.test(text)) {
+    return { type: 'npub', value: text };
+  }
+  throw new Error('signer result is not a public key (expected 64-char hex or npub)');
 }
 
 /**

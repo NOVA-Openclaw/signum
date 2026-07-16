@@ -14,7 +14,10 @@ import {
   isIOS,
   buildAmberSignerUrl,
   extractAmberResult,
-  decodeAmberResult
+  decodeAmberResult,
+  buildAmberConnectUrl,
+  extractAmberPubkey,
+  decodeAmberPubkeyResult
 } from '../amber.js';
 
 const SAMPLE_EVENT = {
@@ -137,7 +140,117 @@ test('extractAmberResult keeps inner "&event=" sequences intact', () => {
   assert.equal(extractAmberResult(href), raw.replace('?event=', '&event='));
 });
 
-// ── decodeAmberResult ─────────────────────────────────────────────────────
+// ── buildAmberConnectUrl ───────────────────────────────────────────────
+
+test('buildAmberConnectUrl builds a get_public_key request with callbackUrl', () => {
+  const url = buildAmberConnectUrl({
+    callbackUrl: 'https://example.com/sign/index.html?pubkey='
+  });
+  assert.ok(url.startsWith('nostrsigner:?'), 'empty payload for get_public_key');
+  assert.ok(url.includes('type=get_public_key'), 'has type=get_public_key');
+  assert.ok(
+    url.endsWith('&callbackUrl=https://example.com/sign/index.html?pubkey='),
+    'callbackUrl is the last param and unencoded'
+  );
+});
+
+test('buildAmberConnectUrl omits callbackUrl when not provided (clipboard variant)', () => {
+  const url = buildAmberConnectUrl();
+  assert.equal(url, 'nostrsigner:?type=get_public_key');
+});
+
+test('buildAmberConnectUrl rejects callbackUrl containing "&"', () => {
+  assert.throws(
+    () => buildAmberConnectUrl({ callbackUrl: 'https://example.com/?a=1&pubkey=' }),
+    /must not contain "&"/
+  );
+});
+
+// ── extractAmberPubkey ─────────────────────────────────────────────────
+
+const HEX_PK = 'ab'.repeat(32);
+const NPUB = 'npub1sn0wdenkukak0d9dfczzeacvhkrgz92ak56egt7vdgzn8pv2wfqqhrjdv9';
+
+test('extractAmberPubkey returns null when no result is present', () => {
+  assert.equal(extractAmberPubkey('https://example.com/index.html'), null);
+  assert.equal(extractAmberPubkey('https://example.com/index.html?pubkey='), null);
+  assert.equal(extractAmberPubkey(''), null);
+  assert.equal(extractAmberPubkey(undefined), null);
+});
+
+test('extractAmberPubkey captures everything after pubkey=', () => {
+  assert.equal(
+    extractAmberPubkey('https://example.com/index.html?pubkey=' + NPUB),
+    NPUB
+  );
+});
+
+test('extractAmberPubkey survives raw JSON with &, =, and # after pubkey=', () => {
+  const raw = '{"result":"' + HEX_PK + '","package":"a&b=c#d"}';
+  const href = 'https://example.com/index.html?pubkey=' + raw;
+  assert.equal(extractAmberPubkey(href), raw);
+});
+
+test('extractAmberPubkey keeps inner "&pubkey=" sequences intact', () => {
+  const raw = '{"x":"y"}&pubkey={"k":1}';
+  const href = 'https://example.com/?pubkey=' + raw;
+  assert.equal(extractAmberPubkey(href), raw);
+});
+
+test('extractAmberPubkey does not match a sign return (?event=...)', () => {
+  const href = 'https://example.com/?event={"pubkey":"' + HEX_PK + '"}';
+  assert.equal(extractAmberPubkey(href), null);
+});
+
+// ── decodeAmberPubkeyResult ───────────────────────────────────────────
+
+test('decodeAmberPubkeyResult passes through a hex pubkey (lowercased)', () => {
+  assert.deepEqual(decodeAmberPubkeyResult(HEX_PK), { type: 'hex', value: HEX_PK });
+  assert.deepEqual(
+    decodeAmberPubkeyResult(HEX_PK.toUpperCase()),
+    { type: 'hex', value: HEX_PK }
+  );
+});
+
+test('decodeAmberPubkeyResult passes through an npub for caller-side decoding', () => {
+  assert.deepEqual(decodeAmberPubkeyResult(NPUB), { type: 'npub', value: NPUB });
+});
+
+test('decodeAmberPubkeyResult handles percent-encoded results', () => {
+  const wrapped = encodeURIComponent(JSON.stringify({ result: NPUB }));
+  assert.deepEqual(decodeAmberPubkeyResult(wrapped), { type: 'npub', value: NPUB });
+});
+
+test('decodeAmberPubkeyResult unwraps JSON result/pubkey/event shapes', () => {
+  assert.deepEqual(
+    decodeAmberPubkeyResult(JSON.stringify({ result: HEX_PK })),
+    { type: 'hex', value: HEX_PK }
+  );
+  assert.deepEqual(
+    decodeAmberPubkeyResult(JSON.stringify({ pubkey: NPUB })),
+    { type: 'npub', value: NPUB }
+  );
+  assert.deepEqual(
+    decodeAmberPubkeyResult(JSON.stringify({ event: { pubkey: HEX_PK } })),
+    { type: 'hex', value: HEX_PK }
+  );
+});
+
+test('decodeAmberPubkeyResult trims surrounding whitespace', () => {
+  assert.deepEqual(decodeAmberPubkeyResult('  ' + NPUB + '\n'), { type: 'npub', value: NPUB });
+});
+
+test('decodeAmberPubkeyResult rejects garbage input', () => {
+  assert.throws(() => decodeAmberPubkeyResult(''), /empty/);
+  assert.throws(() => decodeAmberPubkeyResult('not a key'), /not a public key/);
+  assert.throws(() => decodeAmberPubkeyResult('abcd1234'), /not a public key/);
+  assert.throws(() => decodeAmberPubkeyResult('npub1UPPERCASE'), /not a public key/);
+  assert.throws(() => decodeAmberPubkeyResult('{broken json'), /not valid JSON/);
+  assert.throws(() => decodeAmberPubkeyResult('{"package":"x"}'), /no pubkey/);
+  assert.throws(() => decodeAmberPubkeyResult('{"result":42}'), /no pubkey/);
+});
+
+// ── decodeAmberResult ─────────────────────────────────────────────────
 
 async function gzipSigner1(text) {
   const stream = new Blob([new TextEncoder().encode(text)])
