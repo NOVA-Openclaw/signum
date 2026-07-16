@@ -25,6 +25,13 @@
   "output": {
     "path": "./output/signatures.json"
   },
+  "archival": {
+    "relays": [
+      "wss://archive.example.com"
+    ],
+    "republish": false,
+    "dry_run": false
+  },
   "poll_interval_seconds": 300,
   "db_path": "./data/signum.db"
 }

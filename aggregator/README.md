@@ -12,6 +12,7 @@ Reference aggregator for the [Signum petition protocol](../spec/NIP-1791.md) on 
    - Self-zap receipts (`kind:9735`) referencing the signature event, sent by the signer themselves
    - NIP-85 trust assertions from `nip85.nostr.band`
 3. **Output** — writes `signatures.json` with two sort orders (chronological and trust-weighted) plus metadata and methodology.
+4. **Archival Republisher** (optional) — republishes every accepted event verbatim to configured archival relays for durable evidence preservation. See [Archival relays](#archival-relays).
 
 ## Setup
 
@@ -42,6 +43,9 @@ cp config.example.json config.json
 | `trust.threshold` | Minimum composite score for a signature to be "qualifying" |
 | `trust.nip85_provider` | NIP-85 provider pubkey queried on `nip85.nostr.band` |
 | `output.path` | Where to write `signatures.json` |
+| `archival.relays` | Optional array of archival relay URLs for durable republishing |
+| `archival.republish` | Enable/disable archival republishing (default `true` when relays are set) |
+| `archival.dry_run` | Log what would be republished without publishing (default `false`) |
 | `poll_interval_seconds` | Seconds between polls in continuous mode |
 | `db_path` | SQLite database file path |
 
@@ -64,6 +68,40 @@ npm start
 ```bash
 SIGNUM_CONFIG=/path/to/config.json npm start
 ```
+
+### Run tests
+
+```bash
+npm test
+```
+
+## Archival relays
+
+Public relays prune; signatures are evidence and must remain independently
+verifiable. The optional `archival` config block makes the aggregator
+republish every event it accepts — the `kind:30023` petition, **all** valid
+`kind:1791` signatures (revoked and below-threshold included; archival is
+evidence preservation, not scoring), and `kind:5` revocations — verbatim to
+designated archival relays:
+
+```json
+"archival": {
+  "relays": ["wss://archive.example.com"],
+  "republish": true,
+  "dry_run": false
+}
+```
+
+Events are republished as the original signed JSON (ids and signatures
+intact). Per-(event, relay) state is tracked in SQLite so restarts don't
+re-spam relays; failures retry across poll cycles with exponential backoff
+(5 min → 6 h), and write-policy rejections are logged without crashing the
+poll loop.
+
+See [docs/archival-relays.md](../docs/archival-relays.md) for the full
+guide: why archive, running your own strfry archival relay (retention and
+write-policy considerations), router-based ingestion as an alternative, and
+how to evaluate third-party archival relays.
 
 ## Output format
 
@@ -138,7 +176,9 @@ The aggregator is designed to degrade gracefully:
 - `src/relay-poller.js` — relay queries and event ingestion
 - `src/trust-scorer.js` — trust sub-score computation
 - `src/output-writer.js` — JSON feed generation
+- `src/archival-republisher.js` — archival relay republishing
 - `src/utils.js` — shared helpers
+- `test/` — unit tests (`npm test`, Node built-in test runner)
 - `config.example.json` — example configuration
 - `package.json` — dependencies and scripts
 
