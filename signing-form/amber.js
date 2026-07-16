@@ -20,6 +20,43 @@ export function isIOS(ua) {
   return /iphone|ipad|ipod/i.test(String(ua || ''));
 }
 
+// Maximum length for the requester name rendered in the signer's approval
+// dialog — long petition titles get truncated with an ellipsis.
+const APP_NAME_MAX_CHARS = 60;
+
+/**
+ * Compose the requester name shown in the signer's approval dialog
+ * (Amber resolves it from the `appName` query param): "Signum — <petition
+ * title>" when a petition title is available, plain "Signum" otherwise.
+ * Truncated to a dialog-friendly length with an ellipsis.
+ *
+ * @param {string|null} [petitionTitle]
+ * @returns {string}
+ */
+export function composeAmberAppName(petitionTitle) {
+  const title = String(petitionTitle ?? '').trim();
+  if (!title) return 'Signum';
+  const name = `Signum \u2014 ${title}`;
+  if (name.length <= APP_NAME_MAX_CHARS) return name;
+  return name.slice(0, APP_NAME_MAX_CHARS - 1).trimEnd() + '\u2026';
+}
+
+/**
+ * Percent-encode an appName value for a nostrsigner: URL.
+ *
+ * Amber URL-decodes the ENTIRE nostrsigner: string before splitting it on
+ * `?` and `&` (IntentUtils.decodeData → decoded.split("?") /
+ * flatMap(split("&"))), so even a percent-encoded `&` or `?` would
+ * re-emerge after decoding and truncate the value. Those characters are
+ * collapsed to spaces; everything else (`=`, quotes, unicode) survives the
+ * decode-then-split round-trip — Amber rejoins everything after the first
+ * `=` when parsing a parameter.
+ */
+function encodeAmberAppName(appName) {
+  const cleaned = String(appName).replace(/[&?]/g, ' ').replace(/\s+/g, ' ').trim();
+  return encodeURIComponent(cleaned);
+}
+
 /**
  * Build the `nostrsigner:` URL that asks a NIP-55 signer to sign an event.
  *
@@ -35,10 +72,13 @@ export function isIOS(ua) {
  * @param {string} [opts.returnType] - 'event' (default) or 'signature'. The form
  *   needs 'event' because the signer's pubkey is unknown before signing.
  * @param {string} [opts.compressionType] - 'none' (default) or 'gzip'.
+ * @param {string|null} [opts.appName] - requester name shown in the signer's
+ *   approval dialog; percent-encoded and placed before callbackUrl (which
+ *   must stay the last param). Omitted when absent.
  * @returns {string} nostrsigner: URL
  */
 export function buildAmberSignerUrl(unsignedEvent, opts = {}) {
-  const { callbackUrl = null, returnType = 'event', compressionType = 'none' } = opts;
+  const { callbackUrl = null, returnType = 'event', compressionType = 'none', appName = null } = opts;
   if (!unsignedEvent || typeof unsignedEvent !== 'object') {
     throw new Error('unsignedEvent must be an event object');
   }
@@ -48,6 +88,7 @@ export function buildAmberSignerUrl(unsignedEvent, opts = {}) {
   const payload = encodeURIComponent(JSON.stringify(unsignedEvent));
   let url = `nostrsigner:${payload}?compressionType=${compressionType}` +
     `&returnType=${returnType}&type=sign_event`;
+  if (appName) url += `&appName=${encodeAmberAppName(appName)}`;
   if (callbackUrl) url += `&callbackUrl=${callbackUrl}`;
   return url;
 }
@@ -65,14 +106,18 @@ export function buildAmberSignerUrl(unsignedEvent, opts = {}) {
  * @param {object} [opts]
  * @param {string|null} [opts.callbackUrl] - URL the signer appends the pubkey
  *   to; omit/null for the clipboard variant.
+ * @param {string|null} [opts.appName] - requester name shown in the signer's
+ *   approval dialog; percent-encoded and placed before callbackUrl (which
+ *   must stay the last param). Omitted when absent.
  * @returns {string} nostrsigner: URL
  */
 export function buildAmberConnectUrl(opts = {}) {
-  const { callbackUrl = null } = opts;
+  const { callbackUrl = null, appName = null } = opts;
   if (callbackUrl && callbackUrl.includes('&')) {
     throw new Error('callbackUrl must not contain "&" (NIP-55 appends it unencoded)');
   }
   let url = 'nostrsigner:?type=get_public_key';
+  if (appName) url += `&appName=${encodeAmberAppName(appName)}`;
   if (callbackUrl) url += `&callbackUrl=${callbackUrl}`;
   return url;
 }

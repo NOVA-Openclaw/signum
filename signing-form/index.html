@@ -485,7 +485,8 @@
     import { getEventHash, verifyEvent, nip19 } from 'https://esm.sh/nostr-tools@2.12.0';
     import {
       isAndroid, isIOS, buildAmberSignerUrl, extractAmberResult, decodeAmberResult,
-      buildAmberConnectUrl, extractAmberPubkey, decodeAmberPubkeyResult
+      buildAmberConnectUrl, extractAmberPubkey, decodeAmberPubkeyResult,
+      composeAmberAppName
     } from './amber.js';
 
     const DEFAULT_RELAYS = [
@@ -531,6 +532,7 @@
       // than a NIP-07 extension — drives the step-1 status UI.
       amberConnected: false,
       petitionEvent: null,
+      petitionTitle: null,
       contentHash: null,
       aTag: null,
       existingSignature: null,
@@ -932,6 +934,7 @@
         state.contentHash = await sha256Hex(result.content);
 
         const petitionTitle = (result.tags.find(t => t[0] === 'title')?.[1]) || 'Untitled petition';
+        state.petitionTitle = petitionTitle;
         $('preview-title').textContent = petitionTitle;
         setHeaderTitle(petitionTitle);
         $('preview-dtag').textContent = parsed.dTag;
@@ -1383,7 +1386,12 @@
       const callbackUrl = canCallback
         ? `${window.location.origin}${window.location.pathname}?event=`
         : null;
-      window.location.href = buildAmberSignerUrl(event, { callbackUrl });
+      // appName identifies the requester in Amber's approval dialog
+      // (otherwise it can show "null" — issue #38).
+      window.location.href = buildAmberSignerUrl(event, {
+        callbackUrl,
+        appName: composeAmberAppName(state.petitionTitle)
+      });
     }
 
     // Shared completion path for both return variants (callback URL and
@@ -1625,7 +1633,12 @@
       const callbackUrl = canCallback
         ? `${window.location.origin}${window.location.pathname}?pubkey=`
         : null;
-      window.location.href = buildAmberConnectUrl({ callbackUrl });
+      // appName identifies the requester in Amber's approval dialog
+      // (otherwise it can show "null" — issue #38).
+      window.location.href = buildAmberConnectUrl({
+        callbackUrl,
+        appName: composeAmberAppName(state.petitionTitle)
+      });
     }
 
     // Shared completion path for both connect return variants (callback
