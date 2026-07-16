@@ -1,0 +1,114 @@
+// amber.js — NIP-55 (Android signer / Amber) web-flow helpers for the
+// Signum signing form.
+//
+// Pure functions only: no DOM or window access, so everything here can be
+// unit-tested in Node (see test/amber.test.mjs) and reused by other pages.
+//
+// NIP-55 web flow (https://github.com/nostr-protocol/nips/blob/master/55.md):
+// the client navigates to a `nostrsigner:` URL whose path is the payload
+// (the unsigned event JSON) and whose query string carries the params. The
+// signer app returns the result by appending it to `callbackUrl`, or — when
+// no callbackUrl is given — by copying it to the clipboard.
+
+/** Android detection from a user-agent string. */
+export function isAndroid(ua) {
+  return /android/i.test(String(ua || ''));
+}
+
+/** iOS detection from a user-agent string. */
+export function isIOS(ua) {
+  return /iphone|ipad|ipod/i.test(String(ua || ''));
+}
+
+/**
+ * Build the `nostrsigner:` URL that asks a NIP-55 signer to sign an event.
+ *
+ * Per the NIP-55 web-flow example the callbackUrl is appended to the query
+ * string as-is (unencoded), so it MUST NOT contain `&` — the signer would
+ * truncate it at the first ampersand when parsing query parameters. Use a
+ * callback URL with a single trailing `?event=` parameter.
+ *
+ * @param {object} unsignedEvent - bare event template (kind, created_at, tags, content)
+ * @param {object} [opts]
+ * @param {string|null} [opts.callbackUrl] - URL the signer appends the result to;
+ *   omit/null for the clipboard variant.
+ * @param {string} [opts.returnType] - 'event' (default) or 'signature'. The form
+ *   needs 'event' because the signer's pubkey is unknown before signing.
+ * @param {string} [opts.compressionType] - 'none' (default) or 'gzip'.
+ * @returns {string} nostrsigner: URL
+ */
+export function buildAmberSignerUrl(unsignedEvent, opts = {}) {
+  const { callbackUrl = null, returnType = 'event', compressionType = 'none' } = opts;
+  if (!unsignedEvent || typeof unsignedEvent !== 'object') {
+    throw new Error('unsignedEvent must be an event object');
+  }
+  if (callbackUrl && callbackUrl.includes('&')) {
+    throw new Error('callbackUrl must not contain "&" (NIP-55 appends it unencoded)');
+  }
+  const payload = encodeURIComponent(JSON.stringify(unsignedEvent));
+  let url = `nostrsigner:${payload}?compressionType=${compressionType}` +
+    `&returnType=${returnType}&type=sign_event`;
+  if (callbackUrl) url += `&callbackUrl=${callbackUrl}`;
+  return url;
+}
+
+/**
+ * Extract the raw signer result appended to the callback URL.
+ *
+ * The signer appends the result directly after `event=`, and the result (an
+ * event JSON when returnType=event) may itself contain `&`, `=`, or `#`
+ * characters that break URLSearchParams. Since `event=` is the last thing in
+ * our callback URL, everything after its first occurrence is the result.
+ *
+ * @param {string} href - full window.location.href
+ * @returns {string|null} raw result string, or null when absent/empty
+ */
+export function extractAmberResult(href) {
+  const parts = String(href || '').split(/[?&]event=/);
+  if (parts.length < 2) return null;
+  const raw = parts.slice(1).join('&event=');
+  return raw.length > 0 ? raw : null;
+}
+
+/**
+ * Decode a NIP-55 signer result into an event object.
+ *
+ * Handles:
+ * - percent-encoded JSON (signers URL-encode the appended result)
+ * - plain JSON (clipboard variant / paste fallback)
+ * - gzip compression: "Signer1" + base64(gzip(json)), with `+` characters
+ *   possibly mangled to spaces by URL transit
+ * - `{ event: {...} }` wrapper shapes
+ *
+ * @param {string} raw
+ * @returns {Promise<object>} parsed event object
+ */
+export async function decodeAmberResult(raw) {
+  let text = String(raw ?? '').trim();
+  if (!text) throw new Error('empty signer result');
+  if (/%[0-9a-fA-F]{2}/.test(text)) {
+    try { text = decodeURIComponent(text); } catch { /* keep as-is */ }
+  }
+  if (text.startsWith('Signer1')) {
+    // compressionType=gzip: "Signer1" prefix + base64(gzip(event json)).
+    // '+' in base64 may have been decoded to ' ' on the way through a URL.
+    const b64 = text.slice('Signer1'.length).replace(/ /g, '+');
+    let bytes;
+    try {
+      bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    } catch {
+      throw new Error('invalid base64 in gzip signer result');
+    }
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    text = await new Response(stream).text();
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('signer result is not valid JSON');
+  }
+  if (parsed && parsed.event && parsed.event.sig) parsed = parsed.event;
+  if (!parsed || typeof parsed !== 'object') throw new Error('signer result is not an event object');
+  return parsed;
+}

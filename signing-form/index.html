@@ -335,18 +335,18 @@
   <header>
     <p class="byline hidden" id="header-byline">powered by Signum</p>
     <h1 class="logo" id="header-title">Signum</h1>
-    <p class="tagline">Sign Nostr petitions with your NIP-07 browser extension.</p>
+    <p class="tagline">Sign Nostr petitions with a NIP-07 browser extension, or Amber on Android.</p>
     <p class="wall-link"><a href="signature-wall.html">View the signature wall &rarr;</a></p>
   </header>
 
   <main>
     <section class="card" id="extension-card">
       <h2>
-        <span>NIP-07 Extension</span>
+        <span>Nostr Signer</span>
         <span class="status bad" id="ext-status"><span class="dot"></span>Not detected</span>
       </h2>
       <p class="muted" id="ext-message">
-        This form needs a Nostr browser extension to access your key and sign events.
+        This form needs a Nostr signer to access your key and sign events.
         It never asks for your <code>nsec</code>.
       </p>
       <div class="extension-links" id="ext-links">
@@ -423,6 +423,19 @@
 
       <div class="actions">
         <button class="btn-primary" id="sign-btn" disabled>Sign &amp; publish</button>
+        <button class="btn-secondary hidden" id="amber-btn">Sign with Amber 📱</button>
+      </div>
+
+      <!-- NIP-55 round-trip fallback: shown after launching Amber. Covers
+           the clipboard variant (no callbackUrl / signer returned without
+           redirecting) and gives an explicit retry surface on errors. -->
+      <div class="result hidden" id="amber-fallback">
+        <p class="muted" id="amber-fallback-hint"></p>
+        <label for="amber-paste">Signed event JSON from Amber</label>
+        <textarea id="amber-paste" rows="4" placeholder='{"id":"…","pubkey":"…","sig":"…"}'></textarea>
+        <div class="actions">
+          <button class="btn-secondary" id="amber-paste-btn">Validate &amp; publish pasted event</button>
+        </div>
       </div>
     </section>
 
@@ -454,7 +467,10 @@
   </main>
 
   <script type="module">
-    import { getEventHash, nip19 } from 'https://esm.sh/nostr-tools@2.12.0';
+    import { getEventHash, verifyEvent, nip19 } from 'https://esm.sh/nostr-tools@2.12.0';
+    import {
+      isAndroid, isIOS, buildAmberSignerUrl, extractAmberResult, decodeAmberResult
+    } from './amber.js';
 
     const DEFAULT_RELAYS = [
       'wss://relay.damus.io',
@@ -476,6 +492,15 @@
       zapAmountSats: 42,
       zapLnAddress: 'nova@renaissancemachine.ai'
     };
+
+    const IS_ANDROID = isAndroid(navigator.userAgent);
+    const IS_IOS = isIOS(navigator.userAgent);
+
+    // NIP-55 round-trip state: the page reloads when Amber redirects back to
+    // the callbackUrl, so the in-progress form state must survive in
+    // sessionStorage across the app switch.
+    const AMBER_PENDING_KEY = 'signum-amber-pending';
+    const AMBER_PENDING_TTL_MS = 30 * 60 * 1000;
 
     const state = {
       nostr: null,
@@ -549,11 +574,44 @@
         $('sign-btn').disabled = !!state.existingSignature;
       } else {
         setStatus('ext-status', 'bad', 'Not detected');
-        $('ext-message').innerHTML =
-          'This form needs a Nostr browser extension to sign events (fetching a petition works without one). It never asks for your <code>nsec</code>. If your extension just loaded, hit “Re-check for extension”.';
-        $('ext-links').classList.remove('hidden');
+        if (IS_ANDROID) {
+          // Mobile browsers don't inject window.nostr — route Android users
+          // to the NIP-55 signer flow instead of desktop extension links.
+          $('ext-message').innerHTML =
+            'No NIP-07 extension detected — normal on mobile. On Android you can sign with ' +
+            '<a href="https://github.com/greenart7c3/Amber" target="_blank" rel="noopener">Amber</a>, ' +
+            'a signer app that keeps your key on your device: fetch the petition below, then hit ' +
+            '“Sign with Amber”. This form never asks for your <code>nsec</code>.';
+          $('ext-links').classList.add('hidden');
+        } else if (IS_IOS) {
+          $('ext-message').innerHTML =
+            'No NIP-07 extension detected — iOS browsers do not support them, and Amber (NIP-55) ' +
+            'is Android-only. A NIP-46 remote-signer option for iOS is planned ' +
+            '(<a href="https://github.com/NOVA-Openclaw/signum/issues/25" target="_blank" rel="noopener">signum#25</a>). ' +
+            'Until then, please sign from a desktop browser or an Android device. ' +
+            'Fetching a petition works without a signer.';
+          $('ext-links').classList.add('hidden');
+        } else {
+          $('ext-message').innerHTML =
+            'This form needs a Nostr browser extension to sign events (fetching a petition works without one). It never asks for your <code>nsec</code>. If your extension just loaded, hit “Re-check for extension”.';
+          $('ext-links').classList.remove('hidden');
+        }
         $('recheck-btn').classList.remove('hidden');
         $('sign-btn').disabled = true;
+      }
+      updateAmberUI();
+    }
+
+    // The Amber button is Android-only (NIP-55 signers are Android apps).
+    // With no extension it is the primary action; with one it's an
+    // always-available alternative.
+    function updateAmberUI() {
+      const btn = $('amber-btn');
+      if (IS_ANDROID) {
+        btn.classList.remove('hidden');
+        btn.className = state.nostr ? 'btn-secondary' : 'btn-primary';
+      } else {
+        btn.classList.add('hidden');
       }
     }
 
@@ -736,6 +794,7 @@
       $('signer-card').classList.add('hidden');
       $('signed-card').classList.remove('hidden');
       $('sign-btn').disabled = true;
+      $('amber-btn').disabled = true;
       // Signing once is success — offer the optional trust-reinforcing zap.
       showZapPrompt();
     }
@@ -750,6 +809,7 @@
       // Restore the signing form only when a petition is actually loaded.
       if (state.petitionEvent) $('signer-card').classList.remove('hidden');
       $('sign-btn').disabled = !state.nostr;
+      $('amber-btn').disabled = false;
       stopZapWatch();
       state.zapReceipts = null;
       $('zap-card').classList.add('hidden');
@@ -1035,43 +1095,7 @@
       try {
         const event = buildSignatureEvent();
         const signed = await robustSignEvent(event);
-
-        $('result-summary').innerHTML = `
-          <strong>Event signed.</strong><br>
-          ID: <code>${signed.id}</code><br>
-          <a href="https://nostr.at/${signed.id}" target="_blank" rel="noopener">View on nostr.at</a><br>
-          <a href="signature-wall.html">View your signature on the wall &rarr;</a>
-        `;
-
-        const list = $('relay-results');
-        list.innerHTML = '';
-        $('result-box').classList.remove('hidden');
-
-        const statuses = new Map();
-        relayUrls.forEach(url => {
-          const li = document.createElement('li');
-          li.id = 'relay-' + btoa(url).replace(/[^a-zA-Z0-9]/g, '');
-          li.innerHTML = `<span>${url}</span><span class="relay-state pending">Pending</span>`;
-          list.appendChild(li);
-          statuses.set(url, li);
-        });
-
-        await Promise.allSettled(relayUrls.map(async url => {
-          const li = statuses.get(url);
-          const badge = li.querySelector('.relay-state');
-          try {
-            await publishToRelay(url, signed);
-            badge.textContent = 'OK';
-            badge.className = 'relay-state ok';
-          } catch (err) {
-            badge.textContent = err.message || 'Failed';
-            badge.className = 'relay-state fail';
-          }
-        }));
-
-        // Signed and published — flip the UI into the already-signed
-        // success state so a second click can't publish a duplicate.
-        showAlreadySigned(signed);
+        await publishAndReport(signed, relayUrls);
       } catch (err) {
         alert('Signing failed: ' + err.message);
       } finally {
@@ -1080,6 +1104,287 @@
         }
         $('sign-btn').textContent = 'Sign & publish';
       }
+    }
+
+    // Shared post-signing pipeline (NIP-07 and NIP-55 paths): render the
+    // signed-event summary, publish to every relay with live per-relay
+    // status, then flip the UI into the already-signed success state so a
+    // second attempt can't publish a duplicate.
+    async function publishAndReport(signed, relayUrls) {
+      $('result-summary').innerHTML = `
+        <strong>Event signed.</strong><br>
+        ID: <code>${signed.id}</code><br>
+        <a href="https://nostr.at/${signed.id}" target="_blank" rel="noopener">View on nostr.at</a><br>
+        <a href="signature-wall.html">View your signature on the wall &rarr;</a>
+      `;
+
+      const list = $('relay-results');
+      list.innerHTML = '';
+      $('result-box').classList.remove('hidden');
+
+      const statuses = new Map();
+      relayUrls.forEach(url => {
+        const li = document.createElement('li');
+        li.id = 'relay-' + btoa(url).replace(/[^a-zA-Z0-9]/g, '');
+        li.innerHTML = `<span>${url}</span><span class="relay-state pending">Pending</span>`;
+        list.appendChild(li);
+        statuses.set(url, li);
+      });
+
+      await Promise.allSettled(relayUrls.map(async url => {
+        const li = statuses.get(url);
+        const badge = li.querySelector('.relay-state');
+        try {
+          await publishToRelay(url, signed);
+          badge.textContent = 'OK';
+          badge.className = 'relay-state ok';
+        } catch (err) {
+          badge.textContent = err.message || 'Failed';
+          badge.className = 'relay-state fail';
+        }
+      }));
+
+      showAlreadySigned(signed);
+    }
+
+    // ── Amber / NIP-55 signing (Android external signer) ───────────────
+    // The web flow is a full app round-trip: this page navigates to a
+    // nostrsigner: URL, Amber opens for user approval, then redirects back
+    // to the callbackUrl with the signed event appended — reloading the
+    // page. Form state is persisted to sessionStorage before launch and
+    // restored on return. When Amber has no callbackUrl (non-http page) or
+    // the user comes back without a redirect, the signed event lands on the
+    // clipboard instead and the paste fallback handles it.
+
+    function savePendingAmber(unsignedEvent) {
+      const pending = {
+        v: 1,
+        ts: Date.now(),
+        unsignedEvent,
+        aTag: state.aTag,
+        contentHash: state.contentHash,
+        petitionEvent: state.petitionEvent,
+        form: {
+          aTagInput: $('a-tag').value,
+          relayHint: $('relay-hint').value,
+          entityType: $('entity-type').value,
+          shortStatement: $('short-statement').value,
+          contentStatement: $('content-statement').value,
+          relaySet: $('relay-set').value
+        }
+      };
+      try {
+        sessionStorage.setItem(AMBER_PENDING_KEY, JSON.stringify(pending));
+      } catch (e) {
+        console.warn('Could not persist Amber round-trip state:', e);
+      }
+    }
+
+    function loadPendingAmber() {
+      try {
+        const raw = sessionStorage.getItem(AMBER_PENDING_KEY);
+        if (!raw) return null;
+        const p = JSON.parse(raw);
+        if (!p || p.v !== 1 || !p.aTag || !p.contentHash || !p.petitionEvent ||
+            (Date.now() - p.ts) > AMBER_PENDING_TTL_MS) {
+          clearPendingAmber();
+          return null;
+        }
+        return p;
+      } catch {
+        return null;
+      }
+    }
+
+    function clearPendingAmber() {
+      try { sessionStorage.removeItem(AMBER_PENDING_KEY); } catch {}
+    }
+
+    // Rehydrate the form and petition preview from persisted state — no
+    // relay refetch needed, the petition event was stored wholesale.
+    function restorePendingForm(p) {
+      $('a-tag').value = p.form.aTagInput;
+      $('relay-hint').value = p.form.relayHint;
+      $('entity-type').value = p.form.entityType;
+      $('short-statement').value = p.form.shortStatement;
+      $('content-statement').value = p.form.contentStatement;
+      $('relay-set').value = p.form.relaySet || DEFAULT_RELAYS.join('\n');
+
+      state.aTag = p.aTag;
+      state.petitionEvent = p.petitionEvent;
+      state.contentHash = p.contentHash;
+
+      const parsed = parseATag(p.aTag);
+      const title = (p.petitionEvent.tags.find(t => t[0] === 'title')?.[1]) || 'Untitled petition';
+      $('preview-title').textContent = title;
+      setHeaderTitle(title);
+      $('preview-dtag').textContent = parsed?.dTag || '';
+      $('preview-sponsor').textContent = parsed?.pubkey || '';
+      $('preview-hash').textContent = p.contentHash;
+      $('preview-excerpt').textContent = p.petitionEvent.content;
+      $('petition-preview').classList.remove('hidden');
+      $('signer-card').classList.remove('hidden');
+    }
+
+    function showAmberFallback(mode, detail) {
+      const hint = $('amber-fallback-hint');
+      if (mode === 'launched') {
+        hint.textContent =
+          'Waiting for Amber… If you are not returned here automatically, Amber may have ' +
+          'copied the signed event to your clipboard — paste it below and publish.';
+      } else if (mode === 'restored') {
+        hint.textContent =
+          'An Amber signing round-trip was in progress. If you approved it and Amber copied ' +
+          'the signed event to your clipboard, paste it below. Otherwise hit “Sign with Amber” ' +
+          'to try again.';
+      } else {
+        hint.textContent =
+          'Amber returned something this page could not use: ' + (detail || 'unknown error') +
+          '. You can retry “Sign with Amber”, or paste the signed event JSON below.';
+      }
+      $('amber-fallback').classList.remove('hidden');
+    }
+
+    function hideAmberFallback() {
+      $('amber-fallback').classList.add('hidden');
+      $('amber-paste').value = '';
+    }
+
+    // Validate a NIP-55 signer result against what we asked it to sign.
+    // Amber is an external app — never trust the round-trip blindly: the
+    // event must be our petition, our content hash, and carry a valid
+    // id + Schnorr signature (verified client-side before publishing).
+    function validateAmberSignedEvent(signed, pending) {
+      if (!signed || typeof signed !== 'object') {
+        throw new Error('No event object in the Amber response.');
+      }
+      if (signed.kind !== 1791) {
+        throw new Error('Returned event has kind ' + signed.kind + ', expected 1791.');
+      }
+      if (!signed.sig || !signed.pubkey) {
+        throw new Error('Returned event is missing sig or pubkey.');
+      }
+      const aVal = signed.tags?.find(t => t[0] === 'a')?.[1];
+      if (aVal !== pending.aTag) {
+        throw new Error('Returned event references a different petition.');
+      }
+      const hashVal = signed.tags?.find(t => t[0] === 'content_hash')?.[1];
+      if (hashVal !== pending.contentHash) {
+        throw new Error('Returned event commits to a different content hash.');
+      }
+      const expectedId = getEventHash(signed);
+      if (!signed.id) {
+        signed.id = expectedId;
+      } else if (signed.id !== expectedId) {
+        throw new Error('Event ID mismatch after signing.');
+      }
+      if (!verifyEvent(signed)) {
+        throw new Error('Signature verification failed.');
+      }
+      return signed;
+    }
+
+    function signWithAmber() {
+      if (!state.petitionEvent || !state.contentHash) {
+        alert('Fetch a petition first.');
+        return;
+      }
+      const relayUrls = getRelaysFromInput();
+      if (relayUrls.length === 0) {
+        alert('Please configure at least one relay.');
+        return;
+      }
+      if (state.existingSignature) return;
+
+      const event = buildSignatureEvent();
+      savePendingAmber(event);
+      showAmberFallback('launched');
+
+      // callbackUrl must be a bare page URL ending in a single `?event=`
+      // param (no '&' — NIP-55 appends the result unencoded). On non-http
+      // pages (file://) there is nothing to redirect back to, so omit it
+      // and let Amber copy the result to the clipboard for the paste box.
+      const canCallback = /^https?:$/.test(window.location.protocol);
+      const callbackUrl = canCallback
+        ? `${window.location.origin}${window.location.pathname}?event=`
+        : null;
+      window.location.href = buildAmberSignerUrl(event, { callbackUrl });
+    }
+
+    // Shared completion path for both return variants (callback URL and
+    // clipboard paste): decode → validate → duplicate-check → publish.
+    async function completeAmberSigning(raw, pending) {
+      try {
+        const decoded = await decodeAmberResult(raw);
+        const signed = validateAmberSignedEvent(decoded, pending);
+        // Adopt the signer's pubkey so zap-receipt matching and duplicate
+        // detection work exactly as they do on the NIP-07 path.
+        state.pubkey = signed.pubkey;
+        hideAmberFallback();
+
+        // Duplicate check — the pubkey is only known after signing on this
+        // path, so it runs here (mirrors the NIP-07 pre-publish race check).
+        let existing = null;
+        try {
+          existing = await findExistingSignature(pending.aTag, signed.pubkey);
+        } catch (e) {
+          console.warn('Duplicate-signature check failed:', e);
+        }
+        if (existing) {
+          clearPendingAmber();
+          showAlreadySigned(existing);
+          return;
+        }
+
+        await publishAndReport(signed, getRelaysFromInput());
+        clearPendingAmber();
+      } catch (err) {
+        console.warn('Amber signing failed:', err);
+        showAmberFallback('error', err.message);
+      }
+    }
+
+    async function submitPastedAmber() {
+      const raw = $('amber-paste').value.trim();
+      if (!raw) {
+        alert('Paste the signed event JSON from Amber first.');
+        return;
+      }
+      const pending = loadPendingAmber() ||
+        (state.aTag && state.contentHash
+          ? { aTag: state.aTag, contentHash: state.contentHash }
+          : null);
+      if (!pending) {
+        alert('Fetch a petition first.');
+        return;
+      }
+      $('amber-paste-btn').disabled = true;
+      try {
+        await completeAmberSigning(raw, pending);
+      } finally {
+        $('amber-paste-btn').disabled = false;
+      }
+    }
+
+    // Page-load handler for the Amber round-trip: strip the signer result
+    // from the URL (so a refresh can't re-publish), restore the persisted
+    // form state, and complete the signing if a result came back.
+    async function processAmberReturn() {
+      const raw = extractAmberResult(window.location.href);
+      if (raw) {
+        history.replaceState(null, '', window.location.pathname);
+      }
+      const pending = loadPendingAmber();
+      if (!pending) return;
+      restorePendingForm(pending);
+      if (!raw) {
+        // Round-trip in progress but no result in the URL: the user came
+        // back manually (rejected, or clipboard variant). Offer the paste
+        // box and a retry.
+        showAmberFallback('restored');
+        return;
+      }
+      await completeAmberSigning(raw, pending);
     }
 
     // ── Symbolic zap (NIP-57 spam-gate / trust reinforcement) ──────────
@@ -1467,7 +1772,11 @@
           signErr = 'The lightning service does not support Nostr zaps ' +
             '(missing allowsNostr/nostrPubkey), so no creditable zap receipt can be produced.';
         } else if (!state.nostr) {
-          signErr = 'No NIP-07 Nostr extension detected — the zap request cannot be signed.';
+          signErr = IS_ANDROID
+            ? 'No NIP-07 extension available — zap-request signing via Amber is not supported ' +
+              'yet, so this page cannot produce a creditable zap. You can zap your signature ' +
+              'natively from a Nostr app instead.'
+            : 'No NIP-07 Nostr extension detected — the zap request cannot be signed.';
         } else {
           const zapReq = {
             kind: 9734,
@@ -1511,11 +1820,15 @@
     $('zap-btn').addEventListener('click', doZap);
     $('fetch-btn').addEventListener('click', fetchPetition);
     $('sign-btn').addEventListener('click', signAndPublish);
+    $('amber-btn').addEventListener('click', signWithAmber);
+    $('amber-paste-btn').addEventListener('click', submitPastedAmber);
     $('reset-btn').addEventListener('click', () => {
       state.petitionEvent = null;
       state.contentHash = null;
       state.aTag = null;
       clearAlreadySigned();
+      clearPendingAmber();
+      hideAmberFallback();
       $('a-tag').value = '';
       $('relay-hint').value = '';
       $('short-statement').value = '';
@@ -1525,6 +1838,9 @@
       $('result-box').classList.add('hidden');
       $('relay-set').value = DEFAULT_RELAYS.join('\n');
     });
+
+    // Resume/complete a NIP-55 round-trip if one is in progress.
+    processAmberReturn().catch(e => console.warn('Amber return handling failed:', e));
   </script>
 </body>
 </html>
