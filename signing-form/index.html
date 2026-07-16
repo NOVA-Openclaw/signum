@@ -342,12 +342,13 @@
   <main>
     <section class="card" id="extension-card">
       <h2>
-        <span>Nostr Signer</span>
-        <span class="status bad" id="ext-status"><span class="dot"></span>Not detected</span>
+        <span>1. Identity</span>
+        <span class="status bad" id="ext-status"><span class="dot"></span>No signer yet</span>
       </h2>
       <p class="muted" id="ext-message">
-        This form needs a Nostr signer to access your key and sign events.
-        It never asks for your <code>nsec</code>.
+        Establish who is signing. Choose a signer to present your public key —
+        a browser extension, or Amber on Android. It never asks for your
+        <code>nsec</code>.
       </p>
       <div class="extension-links" id="ext-links">
         <a href="https://getalby.com/" target="_blank" rel="noopener">Get Alby</a>
@@ -374,7 +375,7 @@
     </section>
 
     <section class="card">
-      <h2>1. Petition</h2>
+      <h2>2. Petition</h2>
       <label for="a-tag">Petition <code>a</code> tag</label>
       <input type="text" id="a-tag" placeholder="30023:<sponsor_pubkey>:<petition_slug>" />
       <p class="hint">Format: <code>30023:&lt;sponsor_pubkey&gt;:&lt;d-tag&gt;</code></p>
@@ -403,7 +404,7 @@
     </section>
 
     <section class="card hidden" id="signer-card">
-      <h2>2. Your signature</h2>
+      <h2>3. Signature</h2>
 
       <div class="row two">
         <div>
@@ -458,7 +459,7 @@
          type, statements, relays, sign button) is hidden and only this
          notice panel (plus publish results, when fresh) is visible. -->
     <section class="card hidden" id="signed-card">
-      <h2>2. Your signature</h2>
+      <h2>3. Signature</h2>
       <div class="notice success" id="already-signed"></div>
       <div class="result hidden" id="result-box">
         <div id="result-summary"></div>
@@ -467,7 +468,7 @@
     </section>
 
     <section class="card hidden" id="zap-card">
-      <h2><span>⚡ Reinforce with a symbolic zap</span></h2>
+      <h2><span>4. ⚡ Reinforce with a symbolic zap</span></h2>
       <p class="muted" id="zap-intro"></p>
       <div class="notice success hidden" id="zap-status"></div>
       <div class="actions">
@@ -598,21 +599,26 @@
     function updateExtensionUI() {
       const connectBtn = $('amber-connect-btn');
       if (state.nostr) {
-        setStatus('ext-status', 'ok', 'Extension connected');
-        $('ext-message').textContent = `Connected pubkey: ${state.pubkey || '...'}`;
+        // Identity established via a NIP-07 browser extension.
+        setStatus('ext-status', 'ok', 'Connected — extension');
+        $('ext-message').innerHTML = state.pubkey
+          ? `Signing as <code class="hash">${pubkeyNpub(state.pubkey)}</code><br>` +
+            'Connected via a NIP-07 browser extension — your key stays in the extension.'
+          : 'Connected via a NIP-07 browser extension.';
         $('ext-links').classList.add('hidden');
         $('recheck-btn').classList.add('hidden');
         connectBtn.classList.add('hidden');
         $('sign-btn').disabled = !!state.existingSignature;
       } else if (IS_ANDROID && state.amberConnected && state.pubkey) {
-        // Connected via Amber (NIP-55): the pubkey is known, so duplicate
-        // detection can gate the form, but NIP-07 signing stays unavailable
-        // — the “Sign with Amber” round-trip does the signing.
-        setStatus('ext-status', 'ok', 'Connected via Amber');
+        // Identity established via Amber (NIP-55): the pubkey is known, so
+        // duplicate detection can gate the signature step, but NIP-07
+        // signing stays unavailable — the “Sign with Amber” round-trip does
+        // the signing.
+        setStatus('ext-status', 'ok', 'Connected — Amber');
         $('ext-message').innerHTML =
-          `Connected via Amber: <code class="hash">${pubkeyNpub(state.pubkey)}</code><br>` +
-          'Your key stays in Amber — this page only knows your public key. ' +
-          'Sign below with “Sign with Amber”.';
+          `Signing as <code class="hash">${pubkeyNpub(state.pubkey)}</code><br>` +
+          'Connected via Amber (NIP-55) — your key stays in Amber, this page only ' +
+          'knows your public key. Sign at the signature step with “Sign with Amber”.';
         $('ext-links').classList.add('hidden');
         $('recheck-btn').classList.add('hidden');
         connectBtn.classList.remove('hidden');
@@ -620,33 +626,37 @@
         connectBtn.textContent = 'Not you? Reconnect with Amber';
         $('sign-btn').disabled = true;
       } else {
-        setStatus('ext-status', 'bad', 'Not detected');
+        setStatus('ext-status', 'bad', 'No signer yet');
         if (IS_ANDROID) {
-          // Mobile browsers don't inject window.nostr — route Android users
-          // to the NIP-55 signer flow instead of desktop extension links.
-          // Connect is the primary step-1 action: it lets duplicate
-          // detection run BEFORE the form is filled out.
+          // Mobile browsers don't inject window.nostr — on Android the
+          // primary identity option is Amber (NIP-55). Connecting first
+          // lets duplicate detection run when the petition loads, before
+          // the signature form is filled out.
           $('ext-message').innerHTML =
-            'No NIP-07 extension detected — normal on mobile. On Android you can sign with ' +
+            'Choose a signer to establish who is signing. On Android the signer is ' +
             '<a href="https://github.com/greenart7c3/Amber" target="_blank" rel="noopener">Amber</a>, ' +
-            'a signer app that keeps your key on your device. Hit “Connect with Amber” so this ' +
-            'page can check whether you’ve already signed, then fetch the petition and sign. ' +
-            'This form never asks for your <code>nsec</code>.';
+            'an app that keeps your key on your device. Hit “Connect with Amber” so this ' +
+            'page knows your public key — it can then tell you at the signature step whether ' +
+            'you’ve already signed. This form never asks for your <code>nsec</code>.';
           $('ext-links').classList.add('hidden');
           connectBtn.classList.remove('hidden');
           connectBtn.className = 'btn-primary';
           connectBtn.textContent = 'Connect with Amber 📱';
         } else if (IS_IOS) {
           $('ext-message').innerHTML =
-            'No NIP-07 extension detected — iOS browsers do not support them, and Amber (NIP-55) ' +
-            'is Android-only. A NIP-46 remote-signer option for iOS is planned ' +
+            'Choose a signer to establish who is signing. iOS browsers do not support NIP-07 ' +
+            'extensions, and Amber (NIP-55) is Android-only. A NIP-46 remote-signer (bunker) ' +
+            'option for iOS is planned ' +
             '(<a href="https://github.com/NOVA-Openclaw/signum/issues/25" target="_blank" rel="noopener">signum#25</a>). ' +
             'Until then, please sign from a desktop browser or an Android device. ' +
-            'Fetching a petition works without a signer.';
+            'Reviewing a petition works without a signer.';
           $('ext-links').classList.add('hidden');
         } else {
           $('ext-message').innerHTML =
-            'This form needs a Nostr browser extension to sign events (fetching a petition works without one). It never asks for your <code>nsec</code>. If your extension just loaded, hit “Re-check for extension”.';
+            'Choose a signer to establish who is signing. On desktop that’s a NIP-07 browser ' +
+            'extension (below); a NIP-46 remote-signer (bunker) option is planned ' +
+            '(<a href="https://github.com/NOVA-Openclaw/signum/issues/25" target="_blank" rel="noopener">signum#25</a>). ' +
+            'It never asks for your <code>nsec</code>. If your extension just loaded, hit “Re-check for extension”.';
           $('ext-links').classList.remove('hidden');
         }
         if (!IS_ANDROID) connectBtn.classList.add('hidden');
