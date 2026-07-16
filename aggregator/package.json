@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "poll-once": "node src/index.js --once",
+    "test": "node --test test/*.test.js",
     "dev": "node --watch src/index.js"
   },
   "keywords": [
