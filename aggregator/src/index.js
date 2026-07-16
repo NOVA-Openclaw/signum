@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SignumDatabase } from './db.js';
 import { RelayPoller } from './relay-poller.js';
+import { ArchivalRepublisher } from './archival-republisher.js';
 import { TrustScorer } from './trust-scorer.js';
 import { OutputWriter } from './output-writer.js';
 import { sleep } from './utils.js';
@@ -37,9 +38,21 @@ function validateConfig(config) {
   config.trust.threshold = config.trust.threshold ?? 25;
   config.output = config.output || {};
   config.output.path = config.output.path || './output/signatures.json';
+  if (config.archival !== undefined) {
+    if (typeof config.archival !== 'object' || config.archival === null || Array.isArray(config.archival)) {
+      throw new Error('Config archival must be an object: { "relays": [...], "republish": true }');
+    }
+    if (!Array.isArray(config.archival.relays)) {
+      throw new Error('Config archival.relays must be an array of relay URLs');
+    }
+    const invalid = config.archival.relays.filter((r) => typeof r !== 'string' || !/^wss?:\/\//i.test(r));
+    if (invalid.length > 0) {
+      throw new Error(`Config archival.relays contains invalid relay URLs: ${invalid.join(', ')}`);
+    }
+  }
 }
 
-async function runOnce(config, db, poller, scorer, writer) {
+async function runOnce(config, db, poller, scorer, writer, archival) {
   console.log(`[run] Starting poll for petition ${config.petition.a_tag}`);
 
   const petition = await poller.fetchPetition();
@@ -70,6 +83,17 @@ async function runOnce(config, db, poller, scorer, writer) {
   const methodology = scorer.getMethodology();
   writer.write(scored, methodology);
 
+  // Archival republish runs after the feed is written so it never delays
+  // output. Republish failures are handled internally and never abort the
+  // poll cycle.
+  if (archival?.enabled) {
+    try {
+      await archival.republishPending();
+    } catch (err) {
+      console.warn(`[archival] Republish pass failed: ${err.message}`);
+    }
+  }
+
   console.log(`[run] Poll complete. ${scored.length} signatures, ${scored.filter((s) => s.qualifying).length} qualifying.`);
   return scored;
 }
@@ -82,6 +106,11 @@ async function main() {
   const poller = new RelayPoller(config, db);
   const scorer = new TrustScorer(config, db, poller);
   const writer = new OutputWriter(config, db);
+  const archival = new ArchivalRepublisher(config, db);
+
+  if (archival.enabled) {
+    console.log(`[archival] Republishing to ${archival.relays.length} archival relay(s): ${archival.relays.join(', ')}${archival.dryRun ? ' [dry run]' : ''}`);
+  }
 
   let running = false;
   let shutdownRequested = false;
@@ -92,6 +121,7 @@ async function main() {
     console.log('\n[shutdown] Closing connections...');
     try {
       await poller.close();
+      await archival.close();
       db.close();
     } catch (err) {
       console.error('[shutdown] Error during cleanup:', err.message);
@@ -106,7 +136,7 @@ async function main() {
     if (running) return;
     running = true;
     try {
-      await runOnce(config, db, poller, scorer, writer);
+      await runOnce(config, db, poller, scorer, writer, archival);
     } catch (err) {
       console.error('[run] Cycle failed:', err.message);
       if (err.stack) console.error(err.stack.split('\n').slice(0, 4).join('\n'));

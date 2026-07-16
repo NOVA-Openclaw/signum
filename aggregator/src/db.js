@@ -101,6 +101,20 @@ export class SignumDatabase {
       );
 
       CREATE INDEX IF NOT EXISTS idx_trust_subject ON trust_assertions(subject_pubkey);
+
+      CREATE TABLE IF NOT EXISTS archival_republish (
+        event_id TEXT NOT NULL,
+        relay TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at INTEGER,
+        next_attempt_at INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        published_at INTEGER,
+        PRIMARY KEY (event_id, relay)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_archival_status ON archival_republish(status, next_attempt_at);
     `);
 
     this._migrate();
@@ -157,6 +171,11 @@ export class SignumDatabase {
         VALUES (:deletion_event_id, :target_event_id, :author_pubkey, :petition_a_tag, :created_at, :raw_event)
       `),
       findDeletion: this.db.prepare('SELECT 1 FROM deletions WHERE target_event_id = ? AND author_pubkey = ? LIMIT 1'),
+      getDeletionsForPetition: this.db.prepare(`
+        SELECT deletion_event_id, raw_event FROM deletions
+        WHERE petition_a_tag = ?
+        GROUP BY deletion_event_id
+      `),
       upsertProfile: this.db.prepare(`
         INSERT INTO profiles (pubkey, display_name, name, nip05, picture, lud06, lud16, about, raw_event)
         VALUES (:pubkey, :display_name, :name, :nip05, :picture, :lud06, :lud16, :about, :raw_event)
@@ -197,7 +216,29 @@ export class SignumDatabase {
           raw_event = excluded.raw_event,
           created_at = excluded.created_at
       `),
-      getTrustAssertionsForSubject: this.db.prepare('SELECT * FROM trust_assertions WHERE subject_pubkey = ?')
+      getTrustAssertionsForSubject: this.db.prepare('SELECT * FROM trust_assertions WHERE subject_pubkey = ?'),
+      getArchivalState: this.db.prepare('SELECT * FROM archival_republish WHERE event_id = ? AND relay = ?'),
+      markArchivalPublished: this.db.prepare(`
+        INSERT INTO archival_republish (event_id, relay, status, attempts, last_attempt_at, next_attempt_at, last_error, published_at)
+        VALUES (:event_id, :relay, 'published', 1, unixepoch(), 0, NULL, unixepoch())
+        ON CONFLICT(event_id, relay) DO UPDATE SET
+          status = 'published',
+          attempts = attempts + 1,
+          last_attempt_at = unixepoch(),
+          next_attempt_at = 0,
+          last_error = NULL,
+          published_at = unixepoch()
+      `),
+      markArchivalFailed: this.db.prepare(`
+        INSERT INTO archival_republish (event_id, relay, status, attempts, last_attempt_at, next_attempt_at, last_error)
+        VALUES (:event_id, :relay, 'failed', 1, unixepoch(), :next_attempt_at, :last_error)
+        ON CONFLICT(event_id, relay) DO UPDATE SET
+          status = 'failed',
+          attempts = attempts + 1,
+          last_attempt_at = unixepoch(),
+          next_attempt_at = excluded.next_attempt_at,
+          last_error = excluded.last_error
+      `)
     };
   }
 
@@ -227,6 +268,27 @@ export class SignumDatabase {
 
   hasDeletion(targetEventId, authorPubkey) {
     return !!this.stmts.findDeletion.get(targetEventId, authorPubkey);
+  }
+
+  getDeletionsForPetition(aTag) {
+    return this.stmts.getDeletionsForPetition.all(aTag);
+  }
+
+  getArchivalState(eventId, relay) {
+    return this.stmts.getArchivalState.get(eventId, relay) || null;
+  }
+
+  markArchivalPublished(eventId, relay) {
+    this.stmts.markArchivalPublished.run({ event_id: eventId, relay });
+  }
+
+  markArchivalFailed(eventId, relay, error, nextAttemptAt) {
+    this.stmts.markArchivalFailed.run({
+      event_id: eventId,
+      relay,
+      last_error: error || null,
+      next_attempt_at: nextAttemptAt
+    });
   }
 
   upsertProfile(profile) {
