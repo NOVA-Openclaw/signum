@@ -42,11 +42,33 @@ publish pasted event**. The same validation applies. Gzip-compressed results
 | Android | Amber (NIP-55) — or NIP-07 in extension-capable mobile browsers |
 | iOS | Not yet — NIP-46 remote signer support is planned ([signum#25](https://github.com/NOVA-Openclaw/signum/issues/25)) |
 
+## Zapping via Amber
+
+The NIP-57 spam-gate **zap request (kind:9734) is signed through the same
+round-trip** as the petition signature: hitting **Zap** builds the zap
+request (e-tagging your signature event, with the petition `a` tag, amount,
+and relays), launches Amber to sign it via `?zapevent=` callback (its own
+parameter and pending-state slot, so a reload mid-zap resumes the zap flow
+and is never confused with a pending signature or connect), validates the
+result on return (kind, tags, amount, id/sig verification, and that the
+signing key matches the key that signed the petition — a mismatched key
+would produce a receipt that is never credited), and only then fetches the
+invoice from the LNURL callback with the signed request attached.
+
+Once an invoice exists, payment is offered as:
+
+- **`lightning:` URI** — primary on mobile: tapping “Open in wallet” hands
+  the invoice to the OS, so Android shows its wallet chooser when several
+  Lightning wallets are installed;
+- **WebLN** one-click on desktop where present;
+- **QR code + copy-invoice** as the universal fallback.
+
+If a signed zap request cannot be produced, the form shows an explicit
+choice (retry / knowingly pay uncredited / zap natively) — never a silent
+fallback to a plain non-creditable invoice.
+
 ## Limitations
 
-- The NIP-57 spam-gate **zap request cannot yet be signed via Amber** — the
-  zap card offers the explicit not-credited / native-client alternatives
-  instead. Signer-agnostic zap signing arrives with NIP-46 support.
 - Every Amber request is a visible app round-trip (NIP-55 web flow has no
   background signing for web clients).
 
@@ -75,3 +97,10 @@ installed and a key set up):
    your input and shows the retry/paste fallback.
 7. Sign again from the same key: the duplicate check should surface the
    existing signature instead of publishing a second event.
+8. Hit **Zap** on the zap card: Amber should open with the kind:9734 zap
+   request; approve it. On return the form should fetch the invoice and
+   show **⚡ Open in wallet** — tapping it should raise Android's wallet
+   chooser (or your default Lightning wallet).
+9. Reject the zap request in Amber and navigate back manually: the zap
+   card restores with the paste-box fallback and the Zap button live for
+   a retry.

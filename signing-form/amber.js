@@ -158,6 +158,25 @@ export function extractAmberPubkey(href) {
 }
 
 /**
+ * Extract the raw signer result appended to the ZAP-REQUEST callback URL
+ * (`...?zapevent=<result>`). The zap flow uses its own callback parameter so
+ * a returning signed kind:9734 zap request can never be mistaken for a
+ * kind:1791 signature return (`?event=`) or a connect return (`?pubkey=`).
+ * Same contract as extractAmberResult: `zapevent=` is the last thing in our
+ * callback URL, so everything after its first occurrence is the result,
+ * even when the signer appends unencoded JSON containing `&`, `=`, or `#`.
+ *
+ * @param {string} href - full window.location.href
+ * @returns {string|null} raw result string, or null when absent/empty
+ */
+export function extractAmberZapResult(href) {
+  const parts = String(href || '').split(/[?&]zapevent=/);
+  if (parts.length < 2) return null;
+  const raw = parts.slice(1).join('&zapevent=');
+  return raw.length > 0 ? raw : null;
+}
+
+/**
  * Decode a NIP-55 get_public_key result into a pubkey descriptor.
  *
  * Signers return the pubkey as a plain string — hex or npub — possibly
