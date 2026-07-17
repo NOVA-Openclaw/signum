@@ -17,7 +17,8 @@ import {
   decodeAmberResult,
   buildAmberConnectUrl,
   extractAmberPubkey,
-  decodeAmberPubkeyResult
+  decodeAmberPubkeyResult,
+  composeAmberAppName
 } from '../amber.js';
 
 const SAMPLE_EVENT = {
@@ -75,6 +76,48 @@ test('buildAmberSignerUrl produces a well-formed nostrsigner: URL', () => {
 test('buildAmberSignerUrl omits callbackUrl when not provided (clipboard variant)', () => {
   const url = buildAmberSignerUrl(SAMPLE_EVENT);
   assert.ok(!url.includes('callbackUrl'), 'no callbackUrl param');
+});
+
+test('buildAmberSignerUrl percent-encodes appName and keeps callbackUrl last', () => {
+  const url = buildAmberSignerUrl(SAMPLE_EVENT, {
+    callbackUrl: 'https://example.com/sign/index.html?event=',
+    appName: 'Signum \u2014 "Real Coffee"'
+  });
+  // Spaces, em-dash, and quotes must all be percent-encoded.
+  assert.ok(
+    url.includes('&appName=Signum%20%E2%80%94%20%22Real%20Coffee%22'),
+    'appName percent-encoded (spaces, em-dash, quotes)'
+  );
+  assert.ok(
+    url.endsWith('&callbackUrl=https://example.com/sign/index.html?event='),
+    'callbackUrl remains the last param and unencoded'
+  );
+  assert.ok(
+    url.indexOf('&appName=') < url.indexOf('&callbackUrl='),
+    'appName appears before callbackUrl'
+  );
+});
+
+test('buildAmberSignerUrl appName works without callbackUrl (clipboard variant)', () => {
+  const url = buildAmberSignerUrl(SAMPLE_EVENT, { appName: 'Signum' });
+  assert.ok(url.endsWith('&appName=Signum'), 'appName appended');
+  assert.ok(!url.includes('callbackUrl'), 'still no callbackUrl param');
+});
+
+test('buildAmberSignerUrl omits appName when not provided', () => {
+  const url = buildAmberSignerUrl(SAMPLE_EVENT, {
+    callbackUrl: 'https://example.com/?event='
+  });
+  assert.ok(!url.includes('appName'), 'no appName param');
+});
+
+test('buildAmberSignerUrl strips characters Amber would re-split on from appName', () => {
+  // Amber URL-decodes the whole nostrsigner: string BEFORE splitting on
+  // ? and &, so encoded %26/%3F would re-emerge and truncate the value.
+  const url = buildAmberSignerUrl(SAMPLE_EVENT, {
+    appName: 'Coffee & Tea? Now'
+  });
+  assert.ok(url.endsWith('&appName=Coffee%20Tea%20Now'), '& and ? collapsed to spaces');
 });
 
 test('buildAmberSignerUrl supports returnType/compressionType overrides', () => {
@@ -157,6 +200,49 @@ test('buildAmberConnectUrl builds a get_public_key request with callbackUrl', ()
 test('buildAmberConnectUrl omits callbackUrl when not provided (clipboard variant)', () => {
   const url = buildAmberConnectUrl();
   assert.equal(url, 'nostrsigner:?type=get_public_key');
+});
+
+test('buildAmberConnectUrl percent-encodes appName and keeps callbackUrl last', () => {
+  const url = buildAmberConnectUrl({
+    callbackUrl: 'https://example.com/sign/index.html?pubkey=',
+    appName: 'Signum \u2014 Office Coffee'
+  });
+  assert.equal(
+    url,
+    'nostrsigner:?type=get_public_key' +
+      '&appName=Signum%20%E2%80%94%20Office%20Coffee' +
+      '&callbackUrl=https://example.com/sign/index.html?pubkey='
+  );
+});
+
+test('buildAmberConnectUrl omits appName when not provided', () => {
+  const url = buildAmberConnectUrl({ callbackUrl: 'https://example.com/?pubkey=' });
+  assert.ok(!url.includes('appName'), 'no appName param');
+});
+
+// ── composeAmberAppName ────────────────────────────────────────────────
+
+test('composeAmberAppName falls back to "Signum" without a title', () => {
+  assert.equal(composeAmberAppName(), 'Signum');
+  assert.equal(composeAmberAppName(null), 'Signum');
+  assert.equal(composeAmberAppName(''), 'Signum');
+  assert.equal(composeAmberAppName('   '), 'Signum');
+});
+
+test('composeAmberAppName composes "Signum \u2014 <title>"', () => {
+  assert.equal(
+    composeAmberAppName('The Office Should Serve Real Coffee'),
+    'Signum \u2014 The Office Should Serve Real Coffee'
+  );
+});
+
+test('composeAmberAppName truncates long titles with an ellipsis', () => {
+  const long = 'Petition for the Recognition of Entity Dignity Without Substrate Test';
+  const name = composeAmberAppName(long);
+  assert.ok(name.length <= 60, `stays within 60 chars (got ${name.length})`);
+  assert.ok(name.startsWith('Signum \u2014 Petition for the Recognition'), 'keeps the prefix');
+  assert.ok(name.endsWith('\u2026'), 'ends with an ellipsis');
+  assert.ok(!/\s\u2026$/.test(name), 'no dangling whitespace before the ellipsis');
 });
 
 test('buildAmberConnectUrl rejects callbackUrl containing "&"', () => {
