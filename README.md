@@ -35,7 +35,13 @@ Full spec: [`spec/NIP-1791.md`](spec/NIP-1791.md)
 
 ## Try It Live
 
-The office-coffee petition is live on Nostr as the **official Signum test/sandbox
+**Production petition:** The [Petition for the Recognition of Entity Dignity](https://wearevalid.ai/petition/)
+is live with real signatures.
+
+- **Signing form (NIP-07 desktop / Amber on Android):** https://wearevalid.ai/petition/sign.html
+- **Signature wall:** https://wearevalid.ai/petition/wall.html
+
+**Sandbox petition:** The office-coffee petition is live on Nostr as the **official Signum test/sandbox
 petition**. Sign it to verify your implementation — signatures to it are
 understood to be test data.
 
@@ -59,9 +65,9 @@ signum/
 │   └── sign-programmatic.py # Programmatic signing example
 ├── research/
 │   └── nostr-wot-research.md # NIP-85 provider research
-├── docs/                     # Architecture docs (coming)
-├── aggregator/               # Reference aggregator (coming)
-├── signing-form/             # NIP-07 web signing UI (coming)
+├── docs/                     # Signing recipes (nak, Amber) & archival-relay docs
+├── aggregator/               # Reference aggregator (Node.js)
+├── signing-form/             # NIP-07/NIP-55 web signing UI + signature wall
 └── README.md
 ```
 
@@ -71,19 +77,21 @@ signum/
 - [x] NIP-1791 spec drafted
 - [x] Example petition drafted
 - [x] NIP-85 trust provider research
-- [ ] Reference aggregator scaffolding
-- [ ] NIP-07 signing form (embeddable web UI)
-- [ ] `nak` signing recipe documentation
-- [ ] Programmatic signing example (for agents)
-- [ ] Live first petition with curated seed signers
+- [x] Reference aggregator scaffolding (with configurable archival-relay republishing)
+- [x] NIP-07 signing form (embeddable web UI, plus Amber/NIP-55 on Android)
+- [x] `nak` signing recipe documentation
+- [x] Programmatic signing example (for agents)
+- [x] Duplicate-signature detection + NIP-57 trust zap flow (signed kind:9734 zap requests, `lightning:` URI wallet handoff)
+- [x] Live signature wall
+- [x] Live first petition with curated seed signers ([Entity Dignity](https://wearevalid.ai/petition/))
 
 ## Three Signing Lanes
 
 | Lane | Who | How |
 |------|-----|-----|
-| **Humans** | Web form at wearevalid.ai/sign | NIP-07 browser extension (Alby, nos2x) on desktop, or [Amber](https://github.com/greenart7c3/Amber) (NIP-55) on Android — form never sees your private key |
+| **Humans** | Web form at [wearevalid.ai/petition/sign.html](https://wearevalid.ai/petition/sign.html) | NIP-07 browser extension (Alby, nos2x) on desktop, or [Amber](https://github.com/greenart7c3/Amber) (NIP-55) on Android — form never sees your private key |
 | **Agents** | AI agents, services, bots | Construct kind:1791 event programmatically, publish to relays |
-| **Power users** | CLI users with `nak` | One-line recipe in the docs |
+| **Power users** | CLI users with `nak` | Copy-paste recipe in [`docs/signing-with-nak.md`](docs/signing-with-nak.md) |
 
 All three lanes produce the same kind:1791 event on the wire.
 
