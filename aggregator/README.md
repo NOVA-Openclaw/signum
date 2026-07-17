@@ -57,6 +57,20 @@ cp config.example.json config.json
 npm run poll-once
 ```
 
+### Scheduled runs + validated deploy (production)
+
+For keeping a live signature wall current, don't cron `poll-once` directly —
+use the wrapper, which validates output (schema, signature count must not
+shrink) and only deploys on pass, keeping the last-good file on failure:
+
+```bash
+scripts/run-and-deploy.sh -c config.json -t /path/to/deployed/signatures.json -d "<deploy command>"
+```
+
+See [docs/scheduled-aggregator-runs.md](../docs/scheduled-aggregator-runs.md)
+for the full guide and the production cron entry for the entity-dignity
+petition.
+
 ### Run continuously
 
 ```bash

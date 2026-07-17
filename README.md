@@ -65,7 +65,7 @@ signum/
 │   └── sign-programmatic.py # Programmatic signing example
 ├── research/
 │   └── nostr-wot-research.md # NIP-85 provider research
-├── docs/                     # Signing recipes (nak, Amber) & archival-relay docs
+├── docs/                     # Signing recipes (nak, Amber), archival-relay & ops docs
 ├── aggregator/               # Reference aggregator (Node.js)
 ├── signing-form/             # NIP-07/NIP-55 web signing UI + signature wall
 └── README.md
@@ -84,6 +84,7 @@ signum/
 - [x] Duplicate-signature detection + NIP-57 trust zap flow (signed kind:9734 zap requests, `lightning:` URI wallet handoff)
 - [x] Live signature wall
 - [x] Live first petition with curated seed signers ([Entity Dignity](https://wearevalid.ai/petition/))
+- [x] Scheduled aggregator runs with validated deploys — the live wall refreshes hourly ([ops guide](docs/scheduled-aggregator-runs.md))
 
 ## Three Signing Lanes
 
