@@ -477,6 +477,20 @@
           <span id="zap-label">Zap</span>
         </button>
       </div>
+
+      <!-- NIP-55 zap-request round-trip fallback: shown after launching
+           Amber to sign the kind:9734 zap request. Covers the clipboard
+           variant (no callbackUrl / signer returned without redirecting)
+           and gives an explicit retry surface. -->
+      <div class="result hidden" id="zap-amber-fallback">
+        <p class="muted" id="zap-amber-hint"></p>
+        <label for="zap-amber-paste">Signed zap request JSON from Amber</label>
+        <textarea id="zap-amber-paste" rows="4" placeholder='{"id":"…","kind":9734,"sig":"…"}'></textarea>
+        <div class="actions">
+          <button class="btn-secondary" id="zap-amber-paste-btn">Use signed zap request</button>
+        </div>
+      </div>
+
       <div class="result hidden" id="zap-result"></div>
     </section>
   </main>
@@ -486,7 +500,7 @@
     import {
       isAndroid, isIOS, buildAmberSignerUrl, extractAmberResult, decodeAmberResult,
       buildAmberConnectUrl, extractAmberPubkey, decodeAmberPubkeyResult,
-      composeAmberAppName
+      composeAmberAppName, extractAmberZapResult
     } from './amber.js';
 
     const DEFAULT_RELAYS = [
@@ -521,6 +535,10 @@
     // Connect (get_public_key) round-trip state lives under its own key so
     // a pending connect and a pending sign can never be confused.
     const AMBER_CONNECT_PENDING_KEY = 'signum-amber-connect-pending';
+    // Zap-request (kind:9734) round-trip state — its own key + a type field,
+    // so a page reload mid-zap resumes the ZAP flow and can never be
+    // confused with a pending signature or connect.
+    const AMBER_ZAP_PENDING_KEY = 'signum-amber-zap-pending';
     // localStorage cache of the last-connected Amber pubkey, so return
     // visits show signed status without another app round-trip.
     const AMBER_PUBKEY_CACHE_KEY = 'signum-amber-pubkey';
@@ -878,6 +896,7 @@
       $('amber-btn').disabled = false;
       stopZapWatch();
       state.zapReceipts = null;
+      hideZapAmberFallback();
       $('zap-card').classList.add('hidden');
     }
 
@@ -1289,6 +1308,7 @@
 
       const parsed = parseATag(p.aTag);
       const title = (p.petitionEvent.tags.find(t => t[0] === 'title')?.[1]) || 'Untitled petition';
+      state.petitionTitle = title;
       $('preview-title').textContent = title;
       setHeaderTitle(title);
       $('preview-dtag').textContent = parsed?.dTag || '';
@@ -1475,7 +1495,14 @@
     // from the URL (so a refresh can't re-publish), restore the persisted
     // form state, and complete the signing if a result came back.
     async function processAmberReturn() {
-      const raw = extractAmberResult(window.location.href);
+      // Only a query string that BEGINS with `?event=` is a signature
+      // return — connect returns begin with `?pubkey=` and zap-request
+      // returns with `?zapevent=` (and either could embed a literal
+      // "event=" that must not be mistaken for one, or be stripped from
+      // the URL by the wrong handler).
+      const raw = window.location.search.startsWith('?event=')
+        ? extractAmberResult(window.location.href)
+        : null;
       if (raw) {
         history.replaceState(null, '', window.location.pathname);
       }
@@ -1929,13 +1956,23 @@
     // receipt watcher runs); `credited: false` is an explicit plain
     // donation — no receipt will ever come, so no watcher, and a
     // persistent not-credited note is shown instead.
+    //
+    // Payment lanes:
+    //   • mobile primary — a `lightning:` URI anchor, so tapping it hands
+    //     the invoice to the OS payment handler (Android shows its wallet
+    //     chooser when several Lightning wallets are installed);
+    //   • desktop — WebLN one-click when present (auto-attempted; mobile
+    //     browsers essentially never have WebLN, and auto-firing it there
+    //     would preempt the OS wallet chooser);
+    //   • everywhere — QR code + copy-invoice as the universal fallback.
     async function presentZapInvoice(box, evt, invoice, amount, { credited, knownIds }) {
+      const isMobile = IS_ANDROID || IS_IOS;
       const creditNote = credited
         ? `<div class="muted">Your symbolic zap reinforces your signature's trust score.</div>`
         : `<div class="muted">This payment is a plain donation — it will <strong>not</strong> be credited to your signature's trust score.</div>`;
 
-      // Lane A: WebLN one-click pay (Alby, etc.).
-      if (typeof window.webln !== 'undefined') {
+      // Lane A (desktop): WebLN one-click pay (Alby, etc.).
+      if (!isMobile && typeof window.webln !== 'undefined') {
         try {
           await window.webln.enable();
           await window.webln.sendPayment(invoice);
@@ -1950,7 +1987,7 @@
         }
       }
 
-      // Lane B: manual — invoice QR + copy, plus native-client lane C.
+      // Lane B: lightning: URI handoff + QR + copy, plus native-client lane C.
       box.classList.remove('hidden');
       box.innerHTML = '';
       const h = document.createElement('strong');
@@ -1965,10 +2002,26 @@
           'signature\'s trust score — it is a plain donation without a zap receipt.';
         box.appendChild(warn);
       }
+
+      // Hand the invoice to the OS payment handler. On mobile this is the
+      // primary action (Android presents its wallet chooser); on desktop
+      // it still works for users with a registered lightning: handler.
+      const payWrap = document.createElement('div');
+      payWrap.style.margin = '12px 0 0';
+      const payA = document.createElement('a');
+      payA.href = `lightning:${invoice}`;
+      payA.className = isMobile ? 'btn-primary' : 'btn-secondary';
+      payA.style.cssText = 'text-decoration:none;display:inline-block;';
+      payA.textContent = '⚡ Open in wallet';
+      payWrap.appendChild(payA);
+      box.appendChild(payWrap);
+
       const p = document.createElement('div');
       p.className = 'muted';
-      p.style.margin = '6px 0 12px';
-      p.textContent = 'Scan or copy this Lightning invoice to pay from any wallet:';
+      p.style.margin = '10px 0 12px';
+      p.textContent = isMobile
+        ? 'Tap to pay with your Lightning wallet — or scan / copy the invoice:'
+        : 'Or scan / copy this Lightning invoice to pay from any wallet:';
       box.appendChild(p);
       const qrWrap = document.createElement('div');
       box.appendChild(qrWrap);
@@ -2002,7 +2055,9 @@
     // Explicit signing-failure UX: NEVER silently fall back to a plain
     // (non-creditable) invoice. The signer sees what failed and chooses:
     // retry the zap request, knowingly pay uncredited, or zap natively.
-    function renderZapSignFailure(box, evt, lnurl, sendMsats, amount, knownIds, detail) {
+    // (LNURL is resolved lazily inside “pay anyway” so this panel can also
+    // serve Amber round-trip failures, where no resolved LNURL is in hand.)
+    function renderZapSignFailure(box, evt, sendMsats, amount, knownIds, detail) {
       stopZapWatch();
       box.classList.remove('hidden');
       box.innerHTML =
@@ -2026,6 +2081,7 @@
         payAnyway.disabled = true;
         stopZapWatch();
         try {
+          const lnurl = await resolveLnurlPay(PETITION_CONFIG.zapLnAddress);
           const invoice = await fetchZapInvoice(lnurl, sendMsats, null);
           await presentZapInvoice(box, evt, invoice, amount, { credited: false, knownIds });
         } catch (err) {
@@ -2051,6 +2107,280 @@
       startZapWatch(box, knownIds);
     }
 
+    // Bare NIP-57 zap-request template (kind:9734). Shared by both signer
+    // paths — NIP-07 in-page signing and the Amber NIP-55 round-trip — so
+    // the e-tag (signature event), a-tag (petition), amount, and relays
+    // are identical regardless of which signer produces the signature.
+    function buildZapRequest(evt, sendMsats, recipientPubkey) {
+      return {
+        kind: 9734,
+        created_at: Math.floor(Date.now() / 1000),
+        content: '',
+        tags: [
+          ['relays', ...getRelaysFromInput()],
+          ['amount', String(sendMsats)],
+          ['e', evt.id],
+          ['a', state.aTag],
+          ['p', recipientPubkey]
+        ]
+      };
+    }
+
+    // ── Amber / NIP-55 zap-request signing ───────────────────────────
+    // Same app round-trip as petition signing, but for the kind:9734 zap
+    // request: persist the flow state, navigate to Amber, and resume from
+    // the page-load handler when Amber redirects back to `?zapevent=`.
+    // The pending state lives under its own sessionStorage key (plus a
+    // type field) so a reload mid-zap resumes the ZAP flow and is never
+    // confused with a pending signature or connect.
+
+    function savePendingZap(unsignedZapReq, ctx) {
+      const pending = {
+        v: 1,
+        type: 'zap',
+        ts: Date.now(),
+        unsignedZapReq,
+        sendMsats: ctx.sendMsats,
+        amountSats: ctx.amountSats,
+        sigEvent: state.existingSignature,
+        aTag: state.aTag,
+        contentHash: state.contentHash,
+        petitionEvent: state.petitionEvent,
+        form: {
+          aTagInput: $('a-tag').value,
+          relayHint: $('relay-hint').value,
+          entityType: $('entity-type').value,
+          shortStatement: $('short-statement').value,
+          contentStatement: $('content-statement').value,
+          relaySet: $('relay-set').value
+        }
+      };
+      try {
+        sessionStorage.setItem(AMBER_ZAP_PENDING_KEY, JSON.stringify(pending));
+      } catch (e) {
+        console.warn('Could not persist Amber zap round-trip state:', e);
+      }
+    }
+
+    function loadPendingZap() {
+      try {
+        const raw = sessionStorage.getItem(AMBER_ZAP_PENDING_KEY);
+        if (!raw) return null;
+        const p = JSON.parse(raw);
+        if (!p || p.v !== 1 || p.type !== 'zap' || !p.unsignedZapReq ||
+            !p.sigEvent || !p.aTag || !p.sendMsats ||
+            (Date.now() - p.ts) > AMBER_PENDING_TTL_MS) {
+          clearPendingZap();
+          return null;
+        }
+        return p;
+      } catch {
+        return null;
+      }
+    }
+
+    function clearPendingZap() {
+      try { sessionStorage.removeItem(AMBER_ZAP_PENDING_KEY); } catch {}
+    }
+
+    function showZapAmberFallback(mode) {
+      const hint = $('zap-amber-hint');
+      if (mode === 'launched') {
+        hint.textContent =
+          'Waiting for Amber… If you are not returned here automatically, Amber may have ' +
+          'copied the signed zap request to your clipboard — paste it below.';
+      } else {
+        hint.textContent =
+          'An Amber zap round-trip was in progress. If you approved it and Amber copied the ' +
+          'signed zap request to your clipboard, paste it below. Otherwise hit the Zap ' +
+          'button to try again.';
+      }
+      $('zap-amber-fallback').classList.remove('hidden');
+    }
+
+    function hideZapAmberFallback() {
+      $('zap-amber-fallback').classList.add('hidden');
+      $('zap-amber-paste').value = '';
+    }
+
+    function zapWithAmber(zapReq, ctx) {
+      savePendingZap(zapReq, ctx);
+      showZapAmberFallback('launched');
+      // Same callbackUrl rules as signing: bare page URL ending in a single
+      // trailing parameter (no '&'). The zap flow owns `?zapevent=` — the
+      // sign flow owns `?event=` and connect owns `?pubkey=`. On non-http
+      // pages there is nothing to redirect back to — omit the callback and
+      // use the clipboard paste fallback.
+      const canCallback = /^https?:$/.test(window.location.protocol);
+      const callbackUrl = canCallback
+        ? `${window.location.origin}${window.location.pathname}?zapevent=`
+        : null;
+      window.location.href = buildAmberSignerUrl(zapReq, {
+        callbackUrl,
+        appName: composeAmberAppName(state.petitionTitle)
+      });
+    }
+
+    // Validate a NIP-55 signer result against the zap request we asked it
+    // to sign. Amber is an external app — never trust the round-trip
+    // blindly: kind, e-tag (signature event), a-tag (petition), amount and
+    // relays must match what we built, and the id + Schnorr signature must
+    // verify. Credit also requires the zap-request pubkey to equal the
+    // signature event's pubkey (the aggregator matches receipts by the
+    // zapper pubkey inside the receipt's embedded request) — a key
+    // hot-switch inside Amber between signing and zapping would produce a
+    // receipt that is silently never credited, so reject it here.
+    function validateAmberZapRequest(signed, pending) {
+      if (!signed || typeof signed !== 'object') {
+        throw new Error('No event object in the Amber response.');
+      }
+      if (signed.kind !== 9734) {
+        throw new Error('Returned event has kind ' + signed.kind + ', expected 9734 (zap request).');
+      }
+      if (!signed.sig || !signed.pubkey) {
+        throw new Error('Returned event is missing sig or pubkey.');
+      }
+      const tagVal = name => signed.tags?.find(t => t[0] === name)?.[1];
+      if (tagVal('e') !== pending.sigEvent.id) {
+        throw new Error('Returned zap request references a different signature event.');
+      }
+      if (tagVal('a') !== pending.aTag) {
+        throw new Error('Returned zap request references a different petition.');
+      }
+      const expectedAmount = pending.unsignedZapReq.tags.find(t => t[0] === 'amount')?.[1];
+      if (tagVal('amount') !== expectedAmount) {
+        throw new Error('Returned zap request carries a different amount.');
+      }
+      if (!signed.tags?.some(t => t[0] === 'relays' && t.length > 1)) {
+        throw new Error('Returned zap request is missing its relays tag.');
+      }
+      if (signed.pubkey !== pending.sigEvent.pubkey) {
+        throw new Error(
+          'The zap request was signed by a different key than your signature, so the ' +
+          'zap receipt would never be credited. Switch Amber back to the key that ' +
+          'signed this petition and try again.'
+        );
+      }
+      const expectedId = getEventHash(signed);
+      if (!signed.id) {
+        signed.id = expectedId;
+      } else if (signed.id !== expectedId) {
+        throw new Error('Event ID mismatch after signing.');
+      }
+      if (!verifyEvent(signed)) {
+        throw new Error('Signature verification failed.');
+      }
+      return signed;
+    }
+
+    // Turn a signed zap request into a payable invoice: fresh LNURL
+    // resolve, receipt snapshot (so the watcher only reacts to THIS zap),
+    // invoice fetch with the signed request attached, then the payment
+    // lanes. Failures here are service errors, not signing errors — the
+    // native-client lane still works, so fall back to njump + watcher.
+    async function presentSignedZapRequest(signed, pending) {
+      const box = $('zap-result');
+      $('zap-btn').disabled = true;
+      $('zap-spinner').classList.remove('hidden');
+      box.classList.add('hidden');
+      let knownIds = new Set((state.zapReceipts || []).map(r => r.id));
+      try {
+        try {
+          const receipts = await findZapReceipts();
+          state.zapReceipts = receipts;
+          knownIds = new Set(receipts.map(r => r.id));
+        } catch (e) {
+          console.warn('zap receipt snapshot failed:', e);
+        }
+        const lnurl = await resolveLnurlPay(PETITION_CONFIG.zapLnAddress);
+        const invoice = await fetchZapInvoice(lnurl, pending.sendMsats, JSON.stringify(signed));
+        await presentZapInvoice(box, pending.sigEvent, invoice, pending.amountSats,
+          { credited: true, knownIds });
+      } catch (err) {
+        njumpFallback(box, pending.sigEvent,
+          `Automatic zap unavailable (${err.message}). You can still zap your signature natively:`);
+        startZapWatch(box, knownIds);
+      } finally {
+        $('zap-spinner').classList.add('hidden');
+        $('zap-btn').disabled = false;
+      }
+    }
+
+    // Shared completion path for both zap return variants (callback URL
+    // and clipboard paste): decode → validate → invoice → payment lanes.
+    // Validation failures land in the explicit signing-failure panel —
+    // same as the NIP-07 path, never a silent plain-invoice fallback.
+    async function completeAmberZap(raw, pending) {
+      let signed;
+      try {
+        const decoded = await decodeAmberResult(raw);
+        signed = validateAmberZapRequest(decoded, pending);
+      } catch (err) {
+        console.warn('Amber zap-request signing failed:', err);
+        hideZapAmberFallback();
+        const knownIds = new Set((state.zapReceipts || []).map(r => r.id));
+        renderZapSignFailure($('zap-result'), pending.sigEvent, pending.sendMsats,
+          pending.amountSats, knownIds, err.message);
+        return;
+      }
+      hideZapAmberFallback();
+      clearPendingZap();
+      await presentSignedZapRequest(signed, pending);
+    }
+
+    async function submitPastedZap() {
+      const raw = $('zap-amber-paste').value.trim();
+      if (!raw) {
+        alert('Paste the signed zap request JSON from Amber first.');
+        return;
+      }
+      const pending = loadPendingZap();
+      if (!pending) {
+        alert('No zap round-trip in progress — hit the Zap button to start over.');
+        return;
+      }
+      $('zap-amber-paste-btn').disabled = true;
+      try {
+        await completeAmberZap(raw, pending);
+      } finally {
+        $('zap-amber-paste-btn').disabled = false;
+      }
+    }
+
+    // Page-load handler for the zap round-trip. Only a query string that
+    // BEGINS with `?zapevent=` is a zap return — sign returns begin with
+    // `?event=` and connect returns with `?pubkey=`. Rehydrates the form,
+    // petition, connected identity, and signed state (which re-opens the
+    // zap card) before completing the zap.
+    async function processAmberZapReturn() {
+      const raw = window.location.search.startsWith('?zapevent=')
+        ? extractAmberZapResult(window.location.href)
+        : null;
+      if (raw) {
+        history.replaceState(null, '', window.location.pathname);
+      }
+      const pending = loadPendingZap();
+      if (!pending) return;
+      restoreFormFields(pending.form);
+      if (pending.petitionEvent && pending.aTag && pending.contentHash) {
+        restorePetitionState(pending);
+      }
+      // The zap flow only exists after a published signature, so the signer
+      // identity is authoritative from the stored signature event.
+      state.pubkey = pending.sigEvent.pubkey;
+      if (IS_ANDROID && !state.nostr) state.amberConnected = true;
+      updateExtensionUI();
+      showAlreadySigned(pending.sigEvent);
+      if (!raw) {
+        // Round-trip in progress but no result in the URL: the user came
+        // back manually (rejected, or clipboard variant). Offer the paste
+        // box and a retry.
+        showZapAmberFallback('restored');
+        return;
+      }
+      await completeAmberZap(raw, pending);
+    }
+
     async function doZap() {
       const evt = state.existingSignature;
       if (!evt) { alert('Sign the petition before zapping.'); return; }
@@ -2065,6 +2395,7 @@
       // only reacts to a NEW receipt from this attempt.
       const knownIds = new Set((state.zapReceipts || []).map(r => r.id));
       stopZapWatch();
+      hideZapAmberFallback();
 
       $('zap-btn').disabled = true;
       $('zap-spinner').classList.remove('hidden');
@@ -2081,42 +2412,37 @@
 
         // NIP-57 zap request — the ONLY path that produces a creditable
         // kind:9735 receipt (server must be nostr-enabled: allowsNostr +
-        // nostrPubkey). If a signed request cannot be obtained, the signer
-        // gets an explicit choice — never a silent plain-invoice fallback.
+        // nostrPubkey). The request is signed by WHICHEVER signer is
+        // connected: a NIP-07 extension in-page, or Amber via the NIP-55
+        // app round-trip. If a signed request cannot be obtained, the
+        // signer gets an explicit choice — never a silent plain-invoice
+        // fallback.
         let signErr = null;
         let signedReq = null;
         if (!lnurl.allowsNostr || !lnurl.nostrPubkey) {
           signErr = 'The lightning service does not support Nostr zaps ' +
             '(missing allowsNostr/nostrPubkey), so no creditable zap receipt can be produced.';
-        } else if (!state.nostr) {
-          signErr = IS_ANDROID
-            ? 'No NIP-07 extension available — zap-request signing via Amber is not supported ' +
-              'yet, so this page cannot produce a creditable zap. You can zap your signature ' +
-              'natively from a Nostr app instead.'
-            : 'No NIP-07 Nostr extension detected — the zap request cannot be signed.';
-        } else {
-          const zapReq = {
-            kind: 9734,
-            created_at: Math.floor(Date.now() / 1000),
-            content: '',
-            tags: [
-              ['relays', ...getRelaysFromInput()],
-              ['amount', String(sendMsats)],
-              ['e', evt.id],
-              ['a', state.aTag],
-              ['p', recipientPubkey || lnurl.nostrPubkey]
-            ]
-          };
+        } else if (state.nostr) {
+          const zapReq = buildZapRequest(evt, sendMsats, recipientPubkey || lnurl.nostrPubkey);
           try {
             signedReq = await robustSignEvent(zapReq);
           } catch (e) {
             console.warn('zap request sign failed:', e);
             signErr = e.message || String(e);
           }
+        } else if (IS_ANDROID) {
+          // Amber (NIP-55): launch the sign_event round-trip for the
+          // kind:9734 zap request — this navigates away; the page-load
+          // handler resumes the zap flow when Amber redirects back.
+          const zapReq = buildZapRequest(evt, sendMsats, recipientPubkey || lnurl.nostrPubkey);
+          zapWithAmber(zapReq, { sendMsats, amountSats: amount });
+          return;
+        } else {
+          signErr = 'No NIP-07 Nostr extension detected — the zap request cannot be signed.';
         }
 
         if (!signedReq) {
-          renderZapSignFailure(box, evt, lnurl, sendMsats, amount, knownIds, signErr);
+          renderZapSignFailure(box, evt, sendMsats, amount, knownIds, signErr);
           return;
         }
 
@@ -2135,6 +2461,7 @@
     }
 
     $('zap-btn').addEventListener('click', doZap);
+    $('zap-amber-paste-btn').addEventListener('click', submitPastedZap);
     $('fetch-btn').addEventListener('click', fetchPetition);
     $('sign-btn').addEventListener('click', signAndPublish);
     $('amber-btn').addEventListener('click', signWithAmber);
@@ -2150,6 +2477,7 @@
       hideAmberFallback();
       clearPendingConnect();
       hideConnectFallback();
+      clearPendingZap();
       $('a-tag').value = '';
       $('relay-hint').value = '';
       $('short-statement').value = '';
@@ -2161,7 +2489,9 @@
     });
 
     // Resume/complete NIP-55 round-trips if any are in progress: connect
-    // (step 1) first, then signing. Afterwards, adopt a cached Amber pubkey
+    // (step 1) first, then the zap request, then signing (each handler
+    // keys off its own callback parameter and pending-state slot, so at
+    // most one of them acts). Afterwards, adopt a cached Amber pubkey
     // from a previous visit so returning signers see their signed status
     // without another app round-trip (the “Not you? Reconnect” button
     // clears it).
@@ -2170,6 +2500,11 @@
         await processAmberConnectReturn();
       } catch (e) {
         console.warn('Amber connect return handling failed:', e);
+      }
+      try {
+        await processAmberZapReturn();
+      } catch (e) {
+        console.warn('Amber zap return handling failed:', e);
       }
       try {
         await processAmberReturn();

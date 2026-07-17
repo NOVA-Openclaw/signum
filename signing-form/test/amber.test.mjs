@@ -18,7 +18,8 @@ import {
   buildAmberConnectUrl,
   extractAmberPubkey,
   decodeAmberPubkeyResult,
-  composeAmberAppName
+  composeAmberAppName,
+  extractAmberZapResult
 } from '../amber.js';
 
 const SAMPLE_EVENT = {
@@ -286,6 +287,76 @@ test('extractAmberPubkey keeps inner "&pubkey=" sequences intact', () => {
 test('extractAmberPubkey does not match a sign return (?event=...)', () => {
   const href = 'https://example.com/?event={"pubkey":"' + HEX_PK + '"}';
   assert.equal(extractAmberPubkey(href), null);
+});
+
+// ── extractAmberZapResult ─────────────────────────────────────
+
+const SAMPLE_ZAP_REQUEST = {
+  kind: 9734,
+  created_at: 1752700000,
+  content: '',
+  tags: [
+    ['relays', 'wss://relay.damus.io', 'wss://nos.lol'],
+    ['amount', '1956000'],
+    ['e', 'cd'.repeat(32)],
+    ['a', '30023:' + 'ab'.repeat(32) + ':office-coffee-2026'],
+    ['p', 'ef'.repeat(32)]
+  ]
+};
+
+test('extractAmberZapResult returns null when no result is present', () => {
+  assert.equal(extractAmberZapResult('https://example.com/index.html'), null);
+  assert.equal(extractAmberZapResult('https://example.com/index.html?zapevent='), null);
+  assert.equal(extractAmberZapResult(''), null);
+  assert.equal(extractAmberZapResult(undefined), null);
+});
+
+test('extractAmberZapResult captures everything after zapevent=', () => {
+  const signed = JSON.stringify({ ...SAMPLE_ZAP_REQUEST, id: 'aa', sig: 'bb', pubkey: 'cc' });
+  const href = 'https://example.com/index.html?zapevent=' + encodeURIComponent(signed);
+  assert.equal(extractAmberZapResult(href), encodeURIComponent(signed));
+});
+
+test('extractAmberZapResult survives raw JSON with &, =, and # after zapevent=', () => {
+  const signed = '{"content":"a&b=c#d","kind":9734}';
+  const href = 'https://example.com/index.html?zapevent=' + signed;
+  assert.equal(extractAmberZapResult(href), signed);
+});
+
+test('extractAmberZapResult keeps inner "&zapevent=" sequences intact', () => {
+  const raw = '{"x":"y"}&zapevent={"k":1}';
+  const href = 'https://example.com/?zapevent=' + raw;
+  assert.equal(extractAmberZapResult(href), raw);
+});
+
+// Cross-flow confusion guards: each callback parameter is owned by exactly
+// one round-trip, and a zap return must never be consumed by the sign or
+// connect extractors (or vice versa).
+
+test('extractAmberZapResult does not match sign (?event=) or connect (?pubkey=) returns', () => {
+  assert.equal(extractAmberZapResult('https://example.com/?event={"kind":9734}'), null);
+  assert.equal(extractAmberZapResult('https://example.com/?pubkey=' + HEX_PK), null);
+});
+
+test('extractAmberResult does not match a zap return (?zapevent=...)', () => {
+  const href = 'https://example.com/?zapevent={"kind":9734,"content":""}';
+  assert.equal(extractAmberResult(href), null);
+});
+
+test('extractAmberPubkey does not match a zap return (?zapevent=...)', () => {
+  const href = 'https://example.com/?zapevent={"pubkey":"' + HEX_PK + '"}';
+  assert.equal(extractAmberPubkey(href), null);
+});
+
+test('buildAmberSignerUrl round-trips a kind:9734 zap request payload', () => {
+  const url = buildAmberSignerUrl(SAMPLE_ZAP_REQUEST, {
+    callbackUrl: 'https://example.com/sign/index.html?zapevent='
+  });
+  assert.ok(url.startsWith('nostrsigner:'), 'starts with nostrsigner:');
+  assert.ok(url.endsWith('&callbackUrl=https://example.com/sign/index.html?zapevent='),
+    'callbackUrl is the last param and uses ?zapevent=');
+  const payload = decodeURIComponent(url.slice('nostrsigner:'.length).split('?')[0]);
+  assert.deepEqual(JSON.parse(payload), SAMPLE_ZAP_REQUEST);
 });
 
 // ── decodeAmberPubkeyResult ───────────────────────────────────────────
