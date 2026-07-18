@@ -87,6 +87,32 @@ export function parseZapPending(raw, now = Date.now(), expectedType = ZAP_PENDIN
 }
 
 /**
+ * Decide which flow section an external-app resume should scroll back
+ * into view (issue #32 live-test finding): returning from Amber (NIP-55
+ * signing) or a Lightning wallet reloads the page anchored at the TOP,
+ * stranding the user away from the step they were interacting with. The
+ * lane is derivable from state the resume paths already have — the Amber
+ * callback parameter (`?zapevent=` is the symbolic zap's, `?donatevent=`
+ * the donation's) or the restored pending record's type. A plain fresh
+ * load (no callback parameter, no pending record) must NOT auto-scroll —
+ * that returns null.
+ *
+ * @param {string|null} search - window.location.search at page load
+ * @param {object|null} pending - restored pending round-trip record
+ * @returns {'zap'|'donate'|null} flow lane owning the resume, or null
+ */
+export function resumeScrollTarget(search, pending) {
+  const s = typeof search === 'string' ? search : '';
+  if (s.startsWith('?zapevent=')) return 'zap';
+  if (s.startsWith('?donatevent=')) return 'donate';
+  if (pending && typeof pending === 'object') {
+    if (pending.type === ZAP_PENDING_TYPE) return 'zap';
+    if (pending.type === DONATION_PENDING_TYPE) return 'donate';
+  }
+  return null;
+}
+
+/**
  * Parse a user-entered donation amount. Rejects non-numeric, malformed,
  * empty, whitespace, fractional, or out-of-range input with a visible
  * error message instead of silently clamping.

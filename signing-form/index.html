@@ -572,7 +572,7 @@
       DONATION_PENDING_TYPE, parseSatsInput, validateDonationAmount,
       donationAmountBounds, isSymbolicZapDone, shouldShowDonationCard,
       donationPaymentsSummary, donationPaidCompletion, donationAmountLocked,
-      symbolicZapAmountSats
+      symbolicZapAmountSats, resumeScrollTarget
     } from './zap-flow.js';
 
     const DEFAULT_RELAYS = [
@@ -1949,6 +1949,41 @@
     // A `?donatevent=` result that arrived without resumable pending state.
     let orphanDonationReturnRaw = null;
 
+    // ── Scroll-on-resume (issue #32 live-test finding) ────────────────
+    // Returning from an external app (Amber signing round-trip, Lightning
+    // wallet) lands the reloaded page anchored at the TOP, stranding the
+    // user away from the step they were on. Once a resume path has
+    // finished rendering its restored state, bring the owning section
+    // back into view. Which lane owns the resume is decided by the pure
+    // helper resumeScrollTarget (zap-flow.js) off the callback parameter
+    // / pending-record type the resume paths already have — a plain fresh
+    // page load yields null and never auto-scrolls.
+
+    // Scroll the section owning a flow lane into view. The 'zap' lane
+    // targets whichever symbolic-zap card is currently shown (the open
+    // card, or the locked card once a receipt exists); 'donate' targets
+    // the donation card. Deferred one frame so the scroll measures the
+    // freshly rendered layout.
+    function scrollFlowSection(lane) {
+      const el = lane === 'donate'
+        ? $('donation-card')
+        : ($('zap-card').classList.contains('hidden') ? $('zapped-card') : $('zap-card'));
+      if (!el || el.classList.contains('hidden')) return;
+      requestAnimationFrame(() => {
+        try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+        catch { el.scrollIntoView(); }
+      });
+    }
+
+    // One scroll per resume: later receipt polls, status refreshes, and
+    // additional resume handlers must not fight the user's own scrolling.
+    let resumeScrollDone = false;
+    function scrollResumedSection(lane) {
+      if (!lane || resumeScrollDone) return;
+      resumeScrollDone = true;
+      scrollFlowSection(lane);
+    }
+
     function applyZapPhase(phase) {
       zapPhase = phase;
       const ui = zapUiState(phase, zapAmountSats());
@@ -2230,7 +2265,14 @@
               `<div class="muted">Your symbolic zap reinforces your signature's trust score.</div>`;
             zapPayCtx = null;
             applyZapPhase('paid');
-            refreshZapStatus();
+            // Let the status refresh settle first — it may swap the open
+            // zap card for the locked one — then bring the symbolic-zap
+            // section back into view: returning from the Lightning wallet
+            // can land the page at the top (issue #32 live-test finding).
+            // Runs once per payment: the watch above has already stopped,
+            // so later polls never re-scroll.
+            await refreshZapStatus();
+            scrollFlowSection('zap');
           }
         } catch (e) {
           console.warn('zap receipt poll failed:', e);
@@ -2743,7 +2785,8 @@
     // petition, connected identity, and signed state (which re-opens the
     // zap card) before completing the zap.
     async function processAmberZapReturn() {
-      const raw = window.location.search.startsWith('?zapevent=')
+      const searchAtLoad = window.location.search;
+      const raw = searchAtLoad.startsWith('?zapevent=')
         ? extractAmberZapResult(window.location.href)
         : null;
       if (raw) {
@@ -2777,9 +2820,13 @@
         // box and a retry.
         showZapAmberFallback('restored');
         applyZapPhase('awaiting-signer');
+        scrollResumedSection(resumeScrollTarget(searchAtLoad, pending));
         return;
       }
       await completeAmberZap(raw, pending);
+      // The resumed state (invoice panel or visible failure) has rendered
+      // — bring the symbolic-zap section back into view (issue #32).
+      scrollResumedSection(resumeScrollTarget(searchAtLoad, pending));
     }
 
     // Complete a `?zapevent=` return whose pending state was lost (fresh
@@ -2965,6 +3012,11 @@
       applyDonationPhase(done.phase);
       renderDonationPayments(done.payments);
       refreshZapStatus(allReceipts);
+      // Returning from the Lightning wallet can land the page at the top
+      // (issue #32 live-test finding) — bring the donation section back
+      // into view now that the completion state has rendered. Once per
+      // payment: the receipt watch stopped before invoking this handler.
+      scrollFlowSection('donate');
     }
 
     // ── Larger donation step (issue #32) ─────────────────────────────
@@ -3074,7 +3126,8 @@
     // begin with `?event=`, connect with `?pubkey=`, and the symbolic zap
     // with `?zapevent=`.
     async function processAmberDonationReturn() {
-      const raw = window.location.search.startsWith('?donatevent=')
+      const searchAtLoad = window.location.search;
+      const raw = searchAtLoad.startsWith('?donatevent=')
         ? extractAmberDonationResult(window.location.href)
         : null;
       if (raw) {
@@ -3097,9 +3150,13 @@
       if (!raw) {
         showDonationAmberFallback('restored');
         applyDonationPhase('awaiting-signer', pending.amountSats);
+        scrollResumedSection(resumeScrollTarget(searchAtLoad, pending));
         return;
       }
       await completeAmberDonation(raw, pending);
+      // The resumed state (invoice panel or visible failure) has rendered
+      // — bring the donation section back into view (issue #32).
+      scrollResumedSection(resumeScrollTarget(searchAtLoad, pending));
     }
 
     // Complete a `?donatevent=` return whose pending state was lost.
@@ -3367,6 +3424,10 @@
           alert('Amber returned a signed zap request, but the page could not resume ' +
             'the zap flow (' + (e?.message || 'unexpected error') + ') — please try zapping again.');
         }
+        // Orphan raws only come from a `?zapevent=` callback — this load
+        // is a symbolic-zap resume, so bring that section back into view
+        // now that its restored state (or visible failure) has rendered.
+        scrollResumedSection('zap');
       }
       if (orphanDonationReturnRaw) {
         const raw = orphanDonationReturnRaw;
@@ -3378,6 +3439,9 @@
           alert('Amber returned a signed zap request, but the page could not resume ' +
             'the donation flow (' + (e?.message || 'unexpected error') + ') — please try donating again.');
         }
+        // Orphan raws only come from a `?donatevent=` callback — this
+        // load is a donation resume; bring that section back into view.
+        scrollResumedSection('donate');
       }
     })();
   </script>
