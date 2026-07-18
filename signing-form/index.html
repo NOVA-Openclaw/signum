@@ -467,6 +467,15 @@
       </div>
     </section>
 
+    <!-- Shown INSTEAD of the zap controls when the connected pubkey has
+         already sent the symbolic zap: the entire two-button form is
+         hidden and only this notice panel is visible. -->
+    <section class="card hidden" id="zapped-card">
+      <h2><span>4. ⚡ Reinforce with a symbolic zap</span></h2>
+      <div class="notice success" id="already-zapped"></div>
+      <div class="notice success hidden" id="zap-status-locked"></div>
+    </section>
+
     <section class="card hidden" id="zap-card">
       <h2><span>4. ⚡ Reinforce with a symbolic zap</span></h2>
       <p class="muted" id="zap-intro"></p>
@@ -501,6 +510,47 @@
       </div>
 
       <div class="result hidden" id="zap-result"></div>
+    </section>
+
+    <!-- Separate "Make a larger donation" step (issue #32). Appears only
+         after the symbolic zap step is completion-locked. Reuses the same
+         signed kind:9734 → invoice → two-button pattern as the symbolic
+         zap, but with a user-entered amount bounded by LNURL limits. -->
+    <section class="card hidden" id="donation-card">
+      <h2><span>5. Make a larger donation</span></h2>
+      <p class="muted">
+        You've already sent the symbolic zap. If you'd like to reinforce
+        this petition further, choose an amount and send another zap.
+      </p>
+
+      <label for="donation-amount">Amount (sats)</label>
+      <input type="text" inputmode="numeric" pattern="\d*" id="donation-amount" placeholder="Enter amount in sats" />
+      <p class="hint" id="donation-amount-hint"></p>
+      <div class="notice hidden" id="donation-amount-error"></div>
+
+      <div class="actions">
+        <button class="btn-primary" id="donation-btn">
+          <span id="donation-spinner" class="spinner hidden"></span>
+          <span id="donation-label">⚡ Sign Zap Event</span>
+        </button>
+        <button class="btn-primary" id="donation-pay-btn" disabled>
+          <span id="donation-pay-spinner" class="spinner hidden"></span>
+          <span id="donation-pay-label">Pay Zap Invoice</span>
+        </button>
+      </div>
+      <p class="hint" id="donation-step-hint"></p>
+
+      <!-- NIP-55 donation round-trip fallback. -->
+      <div class="result hidden" id="donation-amber-fallback">
+        <p class="muted" id="donation-amber-hint"></p>
+        <label for="donation-amber-paste">Signed zap request JSON from Amber</label>
+        <textarea id="donation-amber-paste" rows="4" placeholder='{"id":"…","kind":9734,"sig":"…"}'></textarea>
+        <div class="actions">
+          <button class="btn-secondary" id="donation-amber-paste-btn">Use signed zap request</button>
+        </div>
+      </div>
+
+      <div class="result hidden" id="donation-result"></div>
     </section>
   </main>
 
@@ -872,7 +922,7 @@
       return events.reduce((a, b) => (a.created_at <= b.created_at ? a : b));
     }
 
-    function showAlreadySigned(evt) {
+    async function showAlreadySigned(evt) {
       state.existingSignature = evt;
       const when = new Date(evt.created_at * 1000).toLocaleString(undefined, {
         dateStyle: 'long',
@@ -897,7 +947,7 @@
       $('sign-btn').disabled = true;
       $('amber-btn').disabled = true;
       // Signing once is success — offer the optional trust-reinforcing zap.
-      showZapPrompt();
+      await showZapPrompt();
     }
 
     function clearAlreadySigned() {
@@ -914,9 +964,47 @@
       stopZapWatch();
       state.zapReceipts = null;
       zapPayCtx = null;
+      donationPayCtx = null;
       hideZapAmberFallback();
+      hideDonationAmberFallback();
       applyZapPhase('idle');
+      applyDonationPhase('idle');
+      clearAlreadyZapped();
       $('zap-card').classList.add('hidden');
+      $('donation-amount').value = '';
+      hideDonationAmountError();
+    }
+
+    // Step 4 completion-lock state (issue #32): once the connected
+    // pubkey has any symbolic zap receipt, the fixed-amount zap controls
+    // are hidden and a success notice is shown. The donation step is
+    // revealed at the same time.
+    function showAlreadyZapped(receipts) {
+      state.zapReceipts = receipts;
+      const total = receipts.reduce((s, r) => s + (r.sats || 0), 0);
+      const label = total > 0
+        ? `${total} sats`
+        : `${receipts.length} zap${receipts.length > 1 ? 's' : ''}`;
+      const box = $('already-zapped');
+      box.innerHTML =
+        `<strong>✅ You've already zapped this petition${total > 0 ? ': ' + label : ''}</strong>` +
+        `Your symbolic zap reinforces your signature's trust score.`;
+      box.classList.remove('hidden');
+      $('zap-status-locked').classList.add('hidden');
+      $('zap-card').classList.add('hidden');
+      $('zapped-card').classList.remove('hidden');
+      showDonationCard();
+    }
+
+    function clearAlreadyZapped() {
+      state.zapReceipts = null;
+      $('zapped-card').classList.add('hidden');
+      const box = $('already-zapped');
+      box.classList.add('hidden');
+      box.innerHTML = '';
+      $('zap-status-locked').classList.add('hidden');
+      $('zap-card').classList.remove('hidden');
+      hideDonationCard();
     }
 
     async function checkAlreadySigned() {

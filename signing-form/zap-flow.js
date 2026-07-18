@@ -12,10 +12,16 @@
 /** How long a persisted zap round-trip stays resumable. */
 export const ZAP_PENDING_TTL_MS = 30 * 60 * 1000;
 
+/** Pending-record type for the fixed symbolic zap (Step 4). */
+export const ZAP_PENDING_TYPE = 'zap';
+
+/** Pending-record type for the open-amount donation step. */
+export const DONATION_PENDING_TYPE = 'donate';
+
 // Sanity ceiling for a zap amount arriving inside a returned signed
 // request when the page's own copy of the request was lost: 100M sats
 // (1 BTC) in msats. Anything above is treated as corrupt, not payable.
-const MAX_ORPHAN_MSATS = 100_000_000_000;
+export const MAX_ORPHAN_MSATS = 100_000_000_000;
 
 /**
  * Build the pending zap round-trip record persisted before launching an
@@ -30,16 +36,18 @@ const MAX_ORPHAN_MSATS = 100_000_000_000;
  * the petition in this session (signed status restored from relays via
  * the cached pubkey), so a valid pending record exists without them.
  *
- * @returns {object} pending record (v:1, type:'zap')
+ * @param {string} [type] - pending record type ('zap' or 'donate')
+ * @returns {object} pending record (v:1, type)
  */
 export function buildZapPending(
   { unsignedZapReq, sendMsats, amountSats, sigEvent, aTag,
-    contentHash = null, petitionEvent = null, form = null },
+    contentHash = null, petitionEvent = null, form = null,
+    type = ZAP_PENDING_TYPE },
   now = Date.now()
 ) {
   return {
     v: 1,
-    type: 'zap',
+    type,
     ts: now,
     unsignedZapReq,
     sendMsats,
@@ -61,13 +69,14 @@ export function buildZapPending(
  *
  * @param {string|null} raw - the stored JSON string
  * @param {number} [now]
+ * @param {string} [expectedType] - pending type to accept ('zap' or 'donate')
  * @returns {object|null}
  */
-export function parseZapPending(raw, now = Date.now()) {
+export function parseZapPending(raw, now = Date.now(), expectedType = ZAP_PENDING_TYPE) {
   if (!raw) return null;
   let p;
   try { p = JSON.parse(raw); } catch { return null; }
-  if (!p || typeof p !== 'object' || p.v !== 1 || p.type !== 'zap') return null;
+  if (!p || typeof p !== 'object' || p.v !== 1 || p.type !== expectedType) return null;
   if (!p.unsignedZapReq || typeof p.unsignedZapReq !== 'object') return null;
   if (!Array.isArray(p.unsignedZapReq.tags)) return null;
   if (!p.sigEvent || typeof p.sigEvent !== 'object' || !p.sigEvent.id) return null;
@@ -75,6 +84,94 @@ export function parseZapPending(raw, now = Date.now()) {
   if (!(Number(p.sendMsats) > 0)) return null;
   if (typeof p.ts !== 'number' || (now - p.ts) > ZAP_PENDING_TTL_MS) return null;
   return p;
+}
+
+/**
+ * Parse a user-entered donation amount. Rejects non-numeric, malformed,
+ * empty, whitespace, fractional, or out-of-range input with a visible
+ * error message instead of silently clamping.
+ *
+ * @param {string} input
+ * @returns {{sats: number, error: null}|{sats: null, error: string}}
+ */
+export function parseSatsInput(input) {
+  if (input === null || input === undefined || String(input).trim() === '') {
+    return { sats: null, error: 'Please enter an amount.' };
+  }
+  const raw = String(input).trim();
+  // Strict integer sats only — no decimals, scientific notation, or signs.
+  if (!/^\d+$/.test(raw)) {
+    return { sats: null, error: 'Amount must be a whole number of sats.' };
+  }
+  // Avoid falling through JavaScript's unsafe integer range.
+  if (raw.length > 15) {
+    return { sats: null, error: 'Amount is too large.' };
+  }
+  const sats = Number(raw);
+  if (!Number.isFinite(sats)) {
+    return { sats: null, error: 'Amount is not valid.' };
+  }
+  return { sats, error: null };
+}
+
+/**
+ * Determine the effective min/max sats for the donation form.
+ * The UI ceiling is clamped to MAX_ORPHAN_MSATS so a signed request can
+ * still be reconstructed if the round-trip state is lost (A4).
+ *
+ * @param {object} lnurl - LNURL-pay response
+ * @returns {{minSats: number, maxSats: number}}
+ */
+export function donationAmountBounds(lnurl) {
+  const minMsats = lnurl?.minSendable ?? 1000;
+  const maxMsats = lnurl?.maxSendable ?? 100000000;
+  const orphanCapMsats = MAX_ORPHAN_MSATS;
+  return {
+    minSats: Math.ceil(minMsats / 1000),
+    maxSats: Math.floor(Math.min(maxMsats, orphanCapMsats) / 1000)
+  };
+}
+
+/**
+ * Validate a donation amount against LNURL bounds.
+ * Returns {sendMsats} on success or {error} on failure — never silently
+ * clamps the amount.
+ *
+ * @param {number} sats
+ * @param {object} lnurl
+ * @returns {{sendMsats: number}|{error: string}}
+ */
+export function validateDonationAmount(sats, lnurl) {
+  const { minSats, maxSats } = donationAmountBounds(lnurl);
+  if (sats < minSats) {
+    return { error: `Minimum donation is ${minSats} sats.` };
+  }
+  if (sats > maxSats) {
+    return { error: `Maximum donation is ${maxSats} sats.` };
+  }
+  return { sendMsats: sats * 1000 };
+}
+
+/**
+ * Step 4 (symbolic zap) completion-lock decision.
+ * Per A1: any prior receipt from the connected pubkey locks the step.
+ *
+ * @param {Array} receipts - parsed receipt objects from findZapReceipts()
+ * @returns {boolean}
+ */
+export function isSymbolicZapDone(receipts) {
+  return Array.isArray(receipts) && receipts.length > 0;
+}
+
+/**
+ * Donation-step visibility decision.
+ * Per A2: the donation card is shown only after Step 4 is locked.
+ *
+ * @param {boolean} isStep4Locked
+ * @returns {boolean}
+ */
+export function shouldShowDonationCard(isStep4Locked) {
+  return !!isStep4Locked;
 }
 
 /**
