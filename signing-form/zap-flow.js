@@ -164,6 +164,33 @@ export function isSymbolicZapDone(receipts) {
 }
 
 /**
+ * Step 4 (symbolic zap) locked-state display amount (issue #32 live-test
+ * finding): the locked card must show ONLY the symbolic zap's amount —
+ * the donation card already lists every payment individually with a
+ * running total, so summing all receipts here double-reports donations.
+ *
+ * Which receipt is "the symbolic one" follows the completion-lock
+ * decision (isSymbolicZapDone: any prior receipt locks the step): prefer
+ * the earliest receipt matching the configured symbolic amount; when
+ * none matches (e.g. the configured amount changed after the zap), fall
+ * back to the earliest receipt carrying a parsable amount.
+ *
+ * @param {Array} receipts - parsed receipt objects from findZapReceipts()
+ * @param {number} [configuredSats] - PETITION_CONFIG.zapAmountSats
+ * @returns {number|null} the symbolic zap's sats, or null when unknown
+ */
+export function symbolicZapAmountSats(receipts, configuredSats) {
+  const list = (Array.isArray(receipts) ? receipts : [])
+    .filter(r => r && typeof r === 'object' && Number(r.sats) > 0)
+    .slice()
+    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+  if (list.length === 0) return null;
+  const cfg = Number(configuredSats);
+  const match = cfg > 0 ? list.find(r => Number(r.sats) === cfg) : null;
+  return Number(match ? match.sats : list[0].sats);
+}
+
+/**
  * Donation-step visibility decision.
  * Per A2: the donation card is shown only after Step 4 is locked.
  *

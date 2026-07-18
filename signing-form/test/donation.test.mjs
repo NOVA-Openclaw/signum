@@ -20,7 +20,8 @@ import {
   checkZapReturnTags,
   donationPaymentsSummary,
   donationPaidCompletion,
-  donationAmountLocked
+  donationAmountLocked,
+  symbolicZapAmountSats
 } from '../zap-flow.js';
 
 const SIG_EVENT = {
@@ -319,4 +320,41 @@ test('donationAmountLocked locks the field only while a round-trip is in flight'
   assert.equal(donationAmountLocked('error'), false);
   assert.equal(donationAmountLocked('paid'), false);
   assert.equal(donationAmountLocked(undefined), false);
+});
+
+// ── symbolicZapAmountSats: locked Step 4 shows ONLY the symbolic zap ──
+// Live-test finding on issue #32: the locked symbolic-zap card summed
+// ALL receipts (symbolic + donations); it must isolate the symbolic one.
+
+test('symbolicZapAmountSats isolates the symbolic zap from donation receipts', () => {
+  // Receipts arrive unordered; symbolic (21) must win over donations.
+  const sats = symbolicZapAmountSats(
+    [DONATION_RECEIPT_2, SYMBOLIC_RECEIPT, DONATION_RECEIPT], 21);
+  assert.equal(sats, 21);
+});
+
+test('symbolicZapAmountSats prefers the configured amount even when a donation came first', () => {
+  const earlyDonation = { id: 'r0', sats: 5000, created_at: 1752700100 };
+  const sats = symbolicZapAmountSats([earlyDonation, SYMBOLIC_RECEIPT], 21);
+  assert.equal(sats, 21);
+});
+
+test('symbolicZapAmountSats falls back to the earliest receipt when none matches the config', () => {
+  // e.g. the configured amount changed after the zap was made.
+  const sats = symbolicZapAmountSats(
+    [DONATION_RECEIPT, SYMBOLIC_RECEIPT, DONATION_RECEIPT_2], 1956);
+  assert.equal(sats, 21);
+});
+
+test('symbolicZapAmountSats returns null for empty, malformed, or amountless input', () => {
+  assert.equal(symbolicZapAmountSats([], 21), null);
+  assert.equal(symbolicZapAmountSats(null, 21), null);
+  assert.equal(symbolicZapAmountSats(undefined, 21), null);
+  assert.equal(symbolicZapAmountSats([{ id: 'rx', sats: null }, null], 21), null);
+});
+
+test('symbolicZapAmountSats works without a configured amount (earliest parsable receipt)', () => {
+  const sats = symbolicZapAmountSats(
+    [DONATION_RECEIPT, SYMBOLIC_RECEIPT], undefined);
+  assert.equal(sats, 21);
 });

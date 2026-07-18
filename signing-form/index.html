@@ -571,7 +571,8 @@
       reconstructZapPending, zapUiState,
       DONATION_PENDING_TYPE, parseSatsInput, validateDonationAmount,
       donationAmountBounds, isSymbolicZapDone, shouldShowDonationCard,
-      donationPaymentsSummary, donationPaidCompletion, donationAmountLocked
+      donationPaymentsSummary, donationPaidCompletion, donationAmountLocked,
+      symbolicZapAmountSats
     } from './zap-flow.js';
 
     const DEFAULT_RELAYS = [
@@ -992,13 +993,12 @@
     // revealed at the same time.
     function showAlreadyZapped(receipts) {
       state.zapReceipts = receipts;
-      const total = receipts.reduce((s, r) => s + (r.sats || 0), 0);
-      const label = total > 0
-        ? `${total} sats`
-        : `${receipts.length} zap${receipts.length > 1 ? 's' : ''}`;
+      // Show only the symbolic zap's own amount here (issue #32 live-test
+      // finding) — the donation card lists every payment with its total.
+      const sats = symbolicZapAmountSats(receipts, zapAmountSats());
       const box = $('already-zapped');
       box.innerHTML =
-        `<strong>✅ You've already zapped this petition${total > 0 ? ': ' + label : ''}</strong>` +
+        `<strong>✅ You've already zapped this petition${sats ? ': ' + sats + ' sats' : ''}</strong>` +
         `Your symbolic zap reinforces your signature's trust score.`;
       box.classList.remove('hidden');
       $('zap-status-locked').classList.add('hidden');
@@ -2151,18 +2151,18 @@
             showAlreadyZapped(receipts);
             return;
           }
-          const total = receipts.reduce((s, r) => s + (r.sats || 0), 0);
-          const label = total > 0
-            ? `${total} sats`
-            : `${receipts.length} zap${receipts.length > 1 ? 's' : ''}`;
+          // Show only the symbolic zap's own amount here (issue #32
+          // live-test finding) — the donation card lists every payment.
+          const sats = symbolicZapAmountSats(receipts, zapAmountSats());
+          const suffix = sats ? `: ${sats} sats` : '';
           const lockedBox = $('zap-status-locked');
           lockedBox.innerHTML =
-            `<strong>⚡ You've already zapped this petition: ${label}</strong>` +
+            `<strong>⚡ You've already zapped this petition${suffix}</strong>` +
             `Your symbolic zap reinforces your signature's trust score.`;
           lockedBox.classList.remove('hidden');
           const box = $('already-zapped');
           box.innerHTML =
-            `<strong>✅ You've already zapped this petition${total > 0 ? ': ' + label : ''}</strong>` +
+            `<strong>✅ You've already zapped this petition${suffix}</strong>` +
             `Your symbolic zap reinforces your signature's trust score.`;
           box.classList.remove('hidden');
           // Keep the donation card's accumulated payment list current
