@@ -82,6 +82,7 @@ signum/
 - [x] `nak` signing recipe documentation
 - [x] Programmatic signing example (for agents)
 - [x] Duplicate-signature detection + NIP-57 trust zap flow (signed kind:9734 zap requests, `lightning:` URI wallet handoff)
+- [x] Completion-locked symbolic zap step + separate freeform-amount donation step, with repeat donations and Amber round-trip scroll restoration ([signum#32](https://github.com/NOVA-Openclaw/signum/issues/32))
 - [x] Live signature wall
 - [x] Live first petition with curated seed signers ([Entity Dignity](https://wearevalid.ai/petition/))
 - [x] Scheduled aggregator runs with validated deploys — the live wall refreshes hourly ([ops guide](docs/scheduled-aggregator-runs.md))
