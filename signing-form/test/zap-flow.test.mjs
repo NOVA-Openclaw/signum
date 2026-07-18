@@ -14,6 +14,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ZAP_PENDING_TTL_MS,
+  ZAP_PENDING_TYPE,
   buildZapPending,
   parseZapPending,
   checkZapReturnTags,
@@ -188,7 +189,7 @@ test('REGRESSION #42: reconstructZapPending resumes an orphaned zap return', () 
   // lost (callback landed in a fresh browsing context). The signed status
   // was restored independently from relays — the flow must reconstruct
   // and resume, not die silently.
-  const res = reconstructZapPending(makeSignedZapReq(), SIG_EVENT, A_TAG, 5000);
+  const res = reconstructZapPending(makeSignedZapReq(), SIG_EVENT, A_TAG, ZAP_PENDING_TYPE, 5000);
   assert.ok(res.pending, 'reconstruction succeeds: ' + (res.error || ''));
   assert.equal(res.pending.sendMsats, 1956000);
   assert.equal(res.pending.amountSats, 1956);

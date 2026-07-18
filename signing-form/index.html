@@ -2920,8 +2920,6 @@
       } catch (e) {
         console.warn('Could not persist Amber donation round-trip state:', e);
       }
-      // Never confuse a donation resume with a symbolic-zap resume.
-      try { localStorage.removeItem(AMBER_ZAP_PENDING_KEY); } catch {}
     }
 
     function loadPendingDonation() {
@@ -3225,6 +3223,7 @@
       clearPendingConnect();
       hideConnectFallback();
       clearPendingZap();
+      clearPendingDonation();
       $('a-tag').value = '';
       $('relay-hint').value = '';
       $('short-statement').value = '';
