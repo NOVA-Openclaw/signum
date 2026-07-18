@@ -12,10 +12,16 @@
 /** How long a persisted zap round-trip stays resumable. */
 export const ZAP_PENDING_TTL_MS = 30 * 60 * 1000;
 
+/** Pending-record type for the fixed symbolic zap (Step 4). */
+export const ZAP_PENDING_TYPE = 'zap';
+
+/** Pending-record type for the open-amount donation step. */
+export const DONATION_PENDING_TYPE = 'donate';
+
 // Sanity ceiling for a zap amount arriving inside a returned signed
 // request when the page's own copy of the request was lost: 100M sats
 // (1 BTC) in msats. Anything above is treated as corrupt, not payable.
-const MAX_ORPHAN_MSATS = 100_000_000_000;
+export const MAX_ORPHAN_MSATS = 100_000_000_000;
 
 /**
  * Build the pending zap round-trip record persisted before launching an
@@ -30,16 +36,18 @@ const MAX_ORPHAN_MSATS = 100_000_000_000;
  * the petition in this session (signed status restored from relays via
  * the cached pubkey), so a valid pending record exists without them.
  *
- * @returns {object} pending record (v:1, type:'zap')
+ * @param {string} [type] - pending record type ('zap' or 'donate')
+ * @returns {object} pending record (v:1, type)
  */
 export function buildZapPending(
   { unsignedZapReq, sendMsats, amountSats, sigEvent, aTag,
-    contentHash = null, petitionEvent = null, form = null },
+    contentHash = null, petitionEvent = null, form = null,
+    type = ZAP_PENDING_TYPE },
   now = Date.now()
 ) {
   return {
     v: 1,
-    type: 'zap',
+    type,
     ts: now,
     unsignedZapReq,
     sendMsats,
@@ -61,13 +69,14 @@ export function buildZapPending(
  *
  * @param {string|null} raw - the stored JSON string
  * @param {number} [now]
+ * @param {string} [expectedType] - pending type to accept ('zap' or 'donate')
  * @returns {object|null}
  */
-export function parseZapPending(raw, now = Date.now()) {
+export function parseZapPending(raw, now = Date.now(), expectedType = ZAP_PENDING_TYPE) {
   if (!raw) return null;
   let p;
   try { p = JSON.parse(raw); } catch { return null; }
-  if (!p || typeof p !== 'object' || p.v !== 1 || p.type !== 'zap') return null;
+  if (!p || typeof p !== 'object' || p.v !== 1 || p.type !== expectedType) return null;
   if (!p.unsignedZapReq || typeof p.unsignedZapReq !== 'object') return null;
   if (!Array.isArray(p.unsignedZapReq.tags)) return null;
   if (!p.sigEvent || typeof p.sigEvent !== 'object' || !p.sigEvent.id) return null;
@@ -75,6 +84,147 @@ export function parseZapPending(raw, now = Date.now()) {
   if (!(Number(p.sendMsats) > 0)) return null;
   if (typeof p.ts !== 'number' || (now - p.ts) > ZAP_PENDING_TTL_MS) return null;
   return p;
+}
+
+/**
+ * Decide which flow section an external-app resume should scroll back
+ * into view (issue #32 live-test finding): returning from Amber (NIP-55
+ * signing) or a Lightning wallet reloads the page anchored at the TOP,
+ * stranding the user away from the step they were interacting with. The
+ * lane is derivable from state the resume paths already have — the Amber
+ * callback parameter (`?zapevent=` is the symbolic zap's, `?donatevent=`
+ * the donation's) or the restored pending record's type. A plain fresh
+ * load (no callback parameter, no pending record) must NOT auto-scroll —
+ * that returns null.
+ *
+ * @param {string|null} search - window.location.search at page load
+ * @param {object|null} pending - restored pending round-trip record
+ * @returns {'zap'|'donate'|null} flow lane owning the resume, or null
+ */
+export function resumeScrollTarget(search, pending) {
+  const s = typeof search === 'string' ? search : '';
+  if (s.startsWith('?zapevent=')) return 'zap';
+  if (s.startsWith('?donatevent=')) return 'donate';
+  if (pending && typeof pending === 'object') {
+    if (pending.type === ZAP_PENDING_TYPE) return 'zap';
+    if (pending.type === DONATION_PENDING_TYPE) return 'donate';
+  }
+  return null;
+}
+
+/**
+ * Parse a user-entered donation amount. Rejects non-numeric, malformed,
+ * empty, whitespace, fractional, or out-of-range input with a visible
+ * error message instead of silently clamping.
+ *
+ * @param {string} input
+ * @returns {{sats: number, error: null}|{sats: null, error: string}}
+ */
+export function parseSatsInput(input) {
+  if (input === null || input === undefined || String(input).trim() === '') {
+    return { sats: null, error: 'Please enter an amount.' };
+  }
+  const raw = String(input).trim();
+  // Strict integer sats only — no decimals, scientific notation, or signs.
+  if (!/^\d+$/.test(raw)) {
+    return { sats: null, error: 'Amount must be a whole number of sats.' };
+  }
+  // Avoid falling through JavaScript's unsafe integer range.
+  if (raw.length > 15) {
+    return { sats: null, error: 'Amount is too large.' };
+  }
+  const sats = Number(raw);
+  if (!Number.isFinite(sats)) {
+    return { sats: null, error: 'Amount is not valid.' };
+  }
+  return { sats, error: null };
+}
+
+/**
+ * Determine the effective min/max sats for the donation form.
+ * The UI ceiling is clamped to MAX_ORPHAN_MSATS so a signed request can
+ * still be reconstructed if the round-trip state is lost (A4).
+ *
+ * @param {object} lnurl - LNURL-pay response
+ * @returns {{minSats: number, maxSats: number}}
+ */
+export function donationAmountBounds(lnurl) {
+  const minMsats = lnurl?.minSendable ?? 1000;
+  const maxMsats = lnurl?.maxSendable ?? 100000000;
+  const orphanCapMsats = MAX_ORPHAN_MSATS;
+  return {
+    minSats: Math.ceil(minMsats / 1000),
+    maxSats: Math.floor(Math.min(maxMsats, orphanCapMsats) / 1000)
+  };
+}
+
+/**
+ * Validate a donation amount against LNURL bounds.
+ * Returns {sendMsats} on success or {error} on failure — never silently
+ * clamps the amount.
+ *
+ * @param {number} sats
+ * @param {object} lnurl
+ * @returns {{sendMsats: number}|{error: string}}
+ */
+export function validateDonationAmount(sats, lnurl) {
+  const { minSats, maxSats } = donationAmountBounds(lnurl);
+  if (sats < minSats) {
+    return { error: `Minimum donation is ${minSats} sats.` };
+  }
+  if (sats > maxSats) {
+    return { error: `Maximum donation is ${maxSats} sats.` };
+  }
+  return { sendMsats: sats * 1000 };
+}
+
+/**
+ * Step 4 (symbolic zap) completion-lock decision.
+ * Per A1: any prior receipt from the connected pubkey locks the step.
+ *
+ * @param {Array} receipts - parsed receipt objects from findZapReceipts()
+ * @returns {boolean}
+ */
+export function isSymbolicZapDone(receipts) {
+  return Array.isArray(receipts) && receipts.length > 0;
+}
+
+/**
+ * Step 4 (symbolic zap) locked-state display amount (issue #32 live-test
+ * finding): the locked card must show ONLY the symbolic zap's amount —
+ * the donation card already lists every payment individually with a
+ * running total, so summing all receipts here double-reports donations.
+ *
+ * Which receipt is "the symbolic one" follows the completion-lock
+ * decision (isSymbolicZapDone: any prior receipt locks the step): prefer
+ * the earliest receipt matching the configured symbolic amount; when
+ * none matches (e.g. the configured amount changed after the zap), fall
+ * back to the earliest receipt carrying a parsable amount.
+ *
+ * @param {Array} receipts - parsed receipt objects from findZapReceipts()
+ * @param {number} [configuredSats] - PETITION_CONFIG.zapAmountSats
+ * @returns {number|null} the symbolic zap's sats, or null when unknown
+ */
+export function symbolicZapAmountSats(receipts, configuredSats) {
+  const list = (Array.isArray(receipts) ? receipts : [])
+    .filter(r => r && typeof r === 'object' && Number(r.sats) > 0)
+    .slice()
+    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+  if (list.length === 0) return null;
+  const cfg = Number(configuredSats);
+  const match = cfg > 0 ? list.find(r => Number(r.sats) === cfg) : null;
+  return Number(match ? match.sats : list[0].sats);
+}
+
+/**
+ * Donation-step visibility decision.
+ * Per A2: the donation card is shown only after Step 4 is locked.
+ *
+ * @param {boolean} isStep4Locked
+ * @returns {boolean}
+ */
+export function shouldShowDonationCard(isStep4Locked) {
+  return !!isStep4Locked;
 }
 
 /**
@@ -139,10 +289,11 @@ export function checkZapReturnTags(signed, pending) {
  * @param {object} signed - decoded signer result
  * @param {object} sigEvent - the restored kind:1791 signature event
  * @param {string} aTag - the page's petition a-tag
+ * @param {string} [type] - pending record type ('zap' or 'donate')
  * @param {number} [now]
  * @returns {{pending: object}|{error: string}}
  */
-export function reconstructZapPending(signed, sigEvent, aTag, now = Date.now()) {
+export function reconstructZapPending(signed, sigEvent, aTag, type = ZAP_PENDING_TYPE, now = Date.now()) {
   if (!signed || typeof signed !== 'object') {
     return { error: 'No event object in the signer response.' };
   }
@@ -174,11 +325,87 @@ export function reconstructZapPending(signed, sigEvent, aTag, now = Date.now()) 
     sendMsats,
     amountSats: Math.round(sendMsats / 1000),
     sigEvent,
-    aTag
+    aTag,
+    type
   }, now);
   const err = checkZapReturnTags(signed, pending);
   if (err) return { error: err };
   return { pending };
+}
+
+/**
+ * Summarize the connected pubkey's completed zap payments for the
+ * donation card's payment list (issue #32 live-test finding): every
+ * kind:9735 receipt e-tagging the signature event from this pubkey is a
+ * completed payment, so repeat donations accumulate here naturally
+ * (newest first) instead of replacing each other.
+ *
+ * @param {Array} receipts - parsed receipt objects from findZapReceipts()
+ * @returns {{count:number, totalSats:number,
+ *            items:Array<{id:string,sats:number|null,created_at:number|null}>}}
+ */
+export function donationPaymentsSummary(receipts) {
+  const items = (Array.isArray(receipts) ? receipts : [])
+    .filter(r => r && typeof r === 'object' && r.id)
+    .map(r => ({
+      id: r.id,
+      sats: Number(r.sats) > 0 ? Number(r.sats) : null,
+      created_at: typeof r.created_at === 'number' ? r.created_at : null
+    }))
+    .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  const totalSats = items.reduce((s, r) => s + (r.sats || 0), 0);
+  return { count: items.length, totalSats, items };
+}
+
+/**
+ * Completion decision once a donation payment is detected (a fresh
+ * kind:9735 receipt arrives while the donation invoice is outstanding).
+ * Live-test finding on issue #32: the page detected the receipt but the
+ * "Pay Zap Invoice" button stayed active. The required behavior is a
+ * FULL form reset so another donation can follow:
+ *
+ *   - phase returns to 'idle' (Sign enabled, Pay disabled — the paid
+ *     invoice can no longer be paid again)
+ *   - the amount field is cleared and re-enabled
+ *   - the invoice context is dropped
+ *   - the pending DONATION record (and only that record — never the
+ *     symbolic-zap key) is cleared from storage
+ *   - the completed payment joins the accumulated payment list
+ *
+ * @param {Array} freshReceipts - receipts not seen before this payment
+ * @param {Array} allReceipts - every receipt from this pubkey
+ * @param {number} [fallbackSats] - amount to report when the fresh
+ *   receipts carry no parsable amount (e.g. the invoice's own amount)
+ * @returns {{paidSats:number, phase:string, resetAmount:boolean,
+ *            clearPayCtx:boolean, clearPending:boolean, payments:object}}
+ */
+export function donationPaidCompletion(freshReceipts, allReceipts, fallbackSats = 0) {
+  const fresh = Array.isArray(freshReceipts) ? freshReceipts : [];
+  const paidSats = fresh.reduce((s, r) => s + (Number(r?.sats) > 0 ? Number(r.sats) : 0), 0)
+    || (Number(fallbackSats) > 0 ? Number(fallbackSats) : 0);
+  return {
+    paidSats,
+    phase: 'idle',
+    resetAmount: true,
+    clearPayCtx: true,
+    clearPending: true,
+    payments: donationPaymentsSummary(allReceipts)
+  };
+}
+
+/**
+ * Whether the donation amount input should be locked for a given phase.
+ * Once a round-trip is in flight the entered amount is baked into the
+ * signed zap request (and then the invoice), so editing it would only
+ * desynchronize the field from what the wallet will actually pay. The
+ * field unlocks whenever a fresh donation can be started.
+ *
+ * @param {string} phase - donation state-machine phase
+ * @returns {boolean}
+ */
+export function donationAmountLocked(phase) {
+  return phase === 'signing' || phase === 'awaiting-signer' ||
+    phase === 'fetching-invoice' || phase === 'ready';
 }
 
 /**

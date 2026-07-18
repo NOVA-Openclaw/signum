@@ -14,10 +14,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ZAP_PENDING_TTL_MS,
+  ZAP_PENDING_TYPE,
+  DONATION_PENDING_TYPE,
   buildZapPending,
   parseZapPending,
   checkZapReturnTags,
   reconstructZapPending,
+  resumeScrollTarget,
   zapUiState
 } from '../zap-flow.js';
 
@@ -188,7 +191,7 @@ test('REGRESSION #42: reconstructZapPending resumes an orphaned zap return', () 
   // lost (callback landed in a fresh browsing context). The signed status
   // was restored independently from relays — the flow must reconstruct
   // and resume, not die silently.
-  const res = reconstructZapPending(makeSignedZapReq(), SIG_EVENT, A_TAG, 5000);
+  const res = reconstructZapPending(makeSignedZapReq(), SIG_EVENT, A_TAG, ZAP_PENDING_TYPE, 5000);
   assert.ok(res.pending, 'reconstruction succeeds: ' + (res.error || ''));
   assert.equal(res.pending.sendMsats, 1956000);
   assert.equal(res.pending.amountSats, 1956);
@@ -315,6 +318,55 @@ test('unknown phases fall back to idle', () => {
   const ui = zapUiState('bogus', 42);
   assert.equal(ui.sign.disabled, false);
   assert.equal(ui.pay.disabled, true);
+});
+
+// ── resumeScrollTarget (issue #32: scroll back on external-app resume) ───
+
+test('resumeScrollTarget: ?zapevent= callback routes to the zap lane', () => {
+  assert.equal(resumeScrollTarget('?zapevent=abc123', null), 'zap');
+});
+
+test('resumeScrollTarget: ?donatevent= callback routes to the donate lane', () => {
+  assert.equal(resumeScrollTarget('?donatevent=abc123', null), 'donate');
+});
+
+test('resumeScrollTarget: restored symbolic-zap pending record routes to zap', () => {
+  const pending = makePending();
+  assert.equal(pending.type, ZAP_PENDING_TYPE);
+  assert.equal(resumeScrollTarget('', pending), 'zap');
+});
+
+test('resumeScrollTarget: restored donation pending record routes to donate', () => {
+  const pending = makePending({ type: DONATION_PENDING_TYPE });
+  assert.equal(resumeScrollTarget('', pending), 'donate');
+});
+
+test('resumeScrollTarget: callback parameter wins over the pending record type', () => {
+  const donatePending = makePending({ type: DONATION_PENDING_TYPE });
+  assert.equal(resumeScrollTarget('?zapevent=abc', donatePending), 'zap');
+  const zapPending = makePending();
+  assert.equal(resumeScrollTarget('?donatevent=abc', zapPending), 'donate');
+});
+
+test('resumeScrollTarget: plain fresh load never scrolls', () => {
+  assert.equal(resumeScrollTarget('', null), null);
+  assert.equal(resumeScrollTarget(null, null), null);
+  assert.equal(resumeScrollTarget(undefined, undefined), null);
+});
+
+test('resumeScrollTarget: unrelated callback params are not zap/donation resumes', () => {
+  // Sign returns use ?event=, connect returns ?pubkey= — neither owns a
+  // zap-flow section.
+  assert.equal(resumeScrollTarget('?event=abc', null), null);
+  assert.equal(resumeScrollTarget('?pubkey=abc', null), null);
+  // The parameter must be leading, exactly as Amber's callback builds it.
+  assert.equal(resumeScrollTarget('?foo=1&zapevent=abc', null), null);
+});
+
+test('resumeScrollTarget: malformed pending records never scroll', () => {
+  assert.equal(resumeScrollTarget('', {}), null);
+  assert.equal(resumeScrollTarget('', { type: 'bogus' }), null);
+  assert.equal(resumeScrollTarget('', 'zap'), null);
 });
 
 // ── full resume simulation (storage round-trip, reporter scenario) ──────
