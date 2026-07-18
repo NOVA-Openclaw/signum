@@ -240,7 +240,7 @@ export function checkZapReturnTags(signed, pending) {
  * @param {number} [now]
  * @returns {{pending: object}|{error: string}}
  */
-export function reconstructZapPending(signed, sigEvent, aTag, type = ZAP_PENDING_TYPE, now = Date.now()) 
+export function reconstructZapPending(signed, sigEvent, aTag, type = ZAP_PENDING_TYPE, now = Date.now()) {
   if (!signed || typeof signed !== 'object') {
     return { error: 'No event object in the signer response.' };
   }

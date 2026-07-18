@@ -194,7 +194,7 @@ test('reconstructZapPending preserves donation amount and type from returned eve
   const signed = makeSignedZapReq({
     tags: makeUnsignedZapReq(5_000_000).tags
   });
-  const res = reconstructZapPending(signed, SIG_EVENT, A_TAG, 5000, DONATION_PENDING_TYPE);
+  const res = reconstructZapPending(signed, SIG_EVENT, A_TAG, DONATION_PENDING_TYPE, 5000);
   assert.ok(res.pending, res.error || '');
   assert.equal(res.pending.sendMsats, 5_000_000);
   assert.equal(res.pending.amountSats, 5000);
@@ -215,7 +215,7 @@ test('reconstructZapPending rejects amount exceeding orphan sanity ceiling', () 
   const signed = makeSignedZapReq({
     tags: makeUnsignedZapReq(overLimit).tags
   });
-  const res = reconstructZapPending(signed, SIG_EVENT, A_TAG, Date.now(), DONATION_PENDING_TYPE);
+  const res = reconstructZapPending(signed, SIG_EVENT, A_TAG, DONATION_PENDING_TYPE, Date.now());
   assert.ok(res.error);
   assert.match(res.error, /out of range/);
 });

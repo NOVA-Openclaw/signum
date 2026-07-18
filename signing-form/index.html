@@ -559,13 +559,13 @@
     import {
       isAndroid, isIOS, buildAmberSignerUrl, extractAmberResult, decodeAmberResult,
       buildAmberConnectUrl, extractAmberPubkey, decodeAmberPubkeyResult,
-      composeAmberAppName, extractAmberZapResult
+      composeAmberAppName, extractAmberZapResult, extractAmberDonationResult
     } from './amber.js';
     import {
       buildZapPending, parseZapPending, checkZapReturnTags,
       reconstructZapPending, zapUiState,
       DONATION_PENDING_TYPE, parseSatsInput, validateDonationAmount,
-      donationAmountBounds, isSymbolicZapDone
+      donationAmountBounds, isSymbolicZapDone, shouldShowDonationCard
     } from './zap-flow.js';
 
     const DEFAULT_RELAYS = [
@@ -608,6 +608,9 @@
     // handoff) where per-tab storage is empty — which killed the zap resume
     // silently (issue #42). localStorage survives the tab switch.
     const AMBER_ZAP_PENDING_KEY = 'signum-amber-zap-pending';
+    // Donation round-trip state lives under its own key so a donation
+    // resume can never be confused with a symbolic zap resume.
+    const AMBER_DONATION_PENDING_KEY = 'signum-amber-donation-pending';
     // localStorage cache of the last-connected Amber pubkey, so return
     // visits show signed status without another app round-trip.
     const AMBER_PUBKEY_CACHE_KEY = 'signum-amber-pubkey';
@@ -1007,6 +1010,64 @@
       $('zap-status-locked').classList.add('hidden');
       $('zap-card').classList.remove('hidden');
       hideDonationCard();
+    }
+
+    // Donation-card visibility helpers (issue #32).
+    function showDonationCard() {
+      $('donation-card').classList.remove('hidden');
+      applyDonationPhase('idle');
+      updateDonationAmountHint();
+    }
+
+    function hideDonationCard() {
+      $('donation-card').classList.add('hidden');
+      applyDonationPhase('idle');
+      donationPayCtx = null;
+    }
+
+    function hideDonationAmountError() {
+      $('donation-amount-error').classList.add('hidden');
+      $('donation-amount-error').textContent = '';
+    }
+
+    function showDonationAmountError(msg) {
+      const box = $('donation-amount-error');
+      box.textContent = msg;
+      box.classList.remove('hidden');
+    }
+
+    function updateDonationAmountHint() {
+      const hint = $('donation-amount-hint');
+      if (!PETITION_CONFIG.zapLnAddress) {
+        hint.textContent = '';
+        return;
+      }
+      resolveLnurlPay(PETITION_CONFIG.zapLnAddress).then(lnurl => {
+        const { minSats, maxSats } = donationAmountBounds(lnurl);
+        hint.textContent = `Minimum ${minSats} sats, maximum ${maxSats} sats.`;
+      }).catch(() => {
+        hint.textContent = '';
+      });
+    }
+
+    function showDonationAmberFallback(mode) {
+      const hint = $('donation-amber-hint');
+      if (mode === 'launched') {
+        hint.textContent =
+          'Waiting for Amber… If you are not returned here automatically, Amber may have ' +
+          'copied the signed zap request to your clipboard — paste it below.';
+      } else {
+        hint.textContent =
+          'An Amber donation round-trip was in progress. If you approved it and Amber copied the ' +
+          'signed zap request to your clipboard, paste it below. Otherwise hit ' +
+          '“Sign Zap Event” to try again.';
+      }
+      $('donation-amber-fallback').classList.remove('hidden');
+    }
+
+    function hideDonationAmberFallback() {
+      $('donation-amber-fallback').classList.add('hidden');
+      $('donation-amber-paste').value = '';
     }
 
     async function checkAlreadySigned() {
@@ -1867,6 +1928,13 @@
     // A `?zapevent=` result that arrived WITHOUT resumable pending state
     // (fresh browsing context) — completed after signed status restores.
     let orphanZapReturnRaw = null;
+    // Donation-step state machine (issue #32): mirrors the symbolic zap
+    // two-button flow but with a user-entered amount.
+    let donationPhase = 'idle';
+    // Invoice context for the donation Pay button.
+    let donationPayCtx = null;
+    // A `?donatevent=` result that arrived without resumable pending state.
+    let orphanDonationReturnRaw = null;
 
     function applyZapPhase(phase) {
       zapPhase = phase;
@@ -1878,6 +1946,72 @@
       $('zap-pay-btn').disabled = ui.pay.disabled;
       $('zap-pay-spinner').classList.toggle('hidden', !ui.pay.spinner);
       $('zap-step-hint').textContent = ui.hint;
+    }
+
+    // Two-button donation state machine (issue #32): same Sign → Pay
+    // shape as the symbolic zap, but the amount comes from the user.
+    function donationUiState(phase, amountSats) {
+      const sats = amountSats ? ` — ${amountSats} sats` : '';
+      const signIdle = { label: `⚡ Sign Zap Event${sats}`, disabled: false, spinner: false };
+      const payLocked = { label: 'Pay Zap Invoice', disabled: true, spinner: false };
+      switch (phase) {
+        case 'signing':
+          return {
+            sign: { label: 'Signing zap event…', disabled: true, spinner: true },
+            pay: payLocked,
+            hint: 'Waiting for your signer to sign the donation zap request…'
+          };
+        case 'awaiting-signer':
+          return {
+            sign: signIdle,
+            pay: payLocked,
+            hint: 'Waiting for Amber — returning here resumes automatically. ' +
+              'You can hit “Sign Zap Event” again to retry.'
+          };
+        case 'fetching-invoice':
+          return {
+            sign: { label: '✓ Zap event signed', disabled: true, spinner: false },
+            pay: { label: 'Fetching invoice…', disabled: true, spinner: true },
+            hint: 'Zap request signed — fetching the Lightning invoice…'
+          };
+        case 'ready':
+          return {
+            sign: { label: '✓ Zap event signed', disabled: true, spinner: false },
+            pay: { label: `⚡ Pay Zap Invoice${sats}`, disabled: false, spinner: false },
+            hint: 'Invoice ready — hit “Pay Zap Invoice” to open your Lightning wallet.'
+          };
+        case 'paid':
+          return {
+            sign: { label: `⚡ Zap again${sats}`, disabled: false, spinner: false },
+            pay: { label: '✓ Zap received', disabled: true, spinner: false },
+            hint: 'Zap received — thank you! Repeat zaps are welcome.'
+          };
+        case 'error':
+          return {
+            sign: signIdle,
+            pay: payLocked,
+            hint: 'Something went wrong — details below. Hit “Sign Zap Event” to retry.'
+          };
+        case 'idle':
+        default:
+          return {
+            sign: signIdle,
+            pay: payLocked,
+            hint: 'Enter an amount, then sign the zap request with your Nostr signer and pay the invoice.'
+          };
+      }
+    }
+
+    function applyDonationPhase(phase, amountSats) {
+      donationPhase = phase;
+      const ui = donationUiState(phase, amountSats);
+      $('donation-label').textContent = ui.sign.label;
+      $('donation-btn').disabled = ui.sign.disabled;
+      $('donation-spinner').classList.toggle('hidden', !ui.sign.spinner);
+      $('donation-pay-label').textContent = ui.pay.label;
+      $('donation-pay-btn').disabled = ui.pay.disabled;
+      $('donation-pay-spinner').classList.toggle('hidden', !ui.pay.spinner);
+      $('donation-step-hint').textContent = ui.hint;
     }
 
     async function resolveLnurlPay(lnaddr) {
@@ -1984,11 +2118,39 @@
       return receipts;
     }
 
-    async function refreshZapStatus() {
+    async function refreshZapStatus(receipts = null) {
       const statusBox = $('zap-status');
       try {
-        const receipts = await findZapReceipts();
+        if (!receipts) receipts = await findZapReceipts();
         state.zapReceipts = receipts;
+
+        // Step 4 completion-lock (issue #32): if we are currently showing
+        // the open symbolic-zap card and a receipt appears, transition to
+        // the locked state + donation card. If already locked, refresh copy.
+        if (isSymbolicZapDone(receipts)) {
+          const openCardVisible = !$('zap-card').classList.contains('hidden');
+          const lockedCardVisible = !$('zapped-card').classList.contains('hidden');
+          if (openCardVisible && !lockedCardVisible) {
+            showAlreadyZapped(receipts);
+            return;
+          }
+          const total = receipts.reduce((s, r) => s + (r.sats || 0), 0);
+          const label = total > 0
+            ? `${total} sats`
+            : `${receipts.length} zap${receipts.length > 1 ? 's' : ''}`;
+          const lockedBox = $('zap-status-locked');
+          lockedBox.innerHTML =
+            `<strong>⚡ You've already zapped this petition: ${label}</strong>` +
+            `Your symbolic zap reinforces your signature's trust score.`;
+          lockedBox.classList.remove('hidden');
+          const box = $('already-zapped');
+          box.innerHTML =
+            `<strong>✅ You've already zapped this petition${total > 0 ? ': ' + label : ''}</strong>` +
+            `Your symbolic zap reinforces your signature's trust score.`;
+          box.classList.remove('hidden');
+          return;
+        }
+
         if (receipts.length > 0) {
           const total = receipts.reduce((s, r) => s + (r.sats || 0), 0);
           const label = total > 0
@@ -2051,9 +2213,26 @@
       zapWatch = { timer };
     }
 
-    function showZapPrompt() {
+    async function showZapPrompt() {
       const evt = state.existingSignature;
       if (!evt) return;
+
+      // Step 4 completion-lock (issue #32): any prior receipt from the
+      // connected pubkey locks the symbolic-zap step and reveals the
+      // larger-donation card.
+      let receipts = state.zapReceipts;
+      if (!receipts) {
+        // Fetch before render so we choose the correct card on first paint.
+        try { receipts = await findZapReceipts(); } catch (e) {
+          console.warn('Could not check prior zap receipts:', e);
+          receipts = [];
+        }
+      }
+      if (shouldShowDonationCard(isSymbolicZapDone(receipts))) {
+        showAlreadyZapped(receipts);
+        return;
+      }
+
       const amount = zapAmountSats();
       $('zap-intro').innerHTML =
         `Reinforce your signature with a symbolic zap of <strong>${amount} sats</strong>. ` +
@@ -2065,7 +2244,7 @@
       applyZapPhase('idle');
       // Advisory: surface prior zaps from this pubkey (keeps the button
       // live either way — repeat zaps are encouraged).
-      refreshZapStatus();
+      refreshZapStatus(receipts);
     }
 
     // Fetch an invoice from the LNURL-pay callback. `nostrParam` (a
@@ -2712,9 +2891,324 @@
       }
     }
 
+    // ── Larger donation step (issue #32) ─────────────────────────────
+    // Same signed kind:9734 → invoice → two-button pattern as the symbolic
+    // zap, but with a user-entered amount bounded by LNURL limits. Kept
+    // intentionally similar to the zap flow so fixes/improvements transfer.
+
+    function savePendingDonation(unsignedZapReq, ctx) {
+      const pending = buildZapPending({
+        unsignedZapReq,
+        sendMsats: ctx.sendMsats,
+        amountSats: ctx.amountSats,
+        sigEvent: state.existingSignature,
+        aTag: state.aTag,
+        contentHash: state.contentHash,
+        petitionEvent: state.petitionEvent,
+        type: DONATION_PENDING_TYPE,
+        form: {
+          aTagInput: $('a-tag').value,
+          relayHint: $('relay-hint').value,
+          entityType: $('entity-type').value,
+          shortStatement: $('short-statement').value,
+          contentStatement: $('content-statement').value,
+          relaySet: $('relay-set').value
+        }
+      });
+      try {
+        localStorage.setItem(AMBER_DONATION_PENDING_KEY, JSON.stringify(pending));
+      } catch (e) {
+        console.warn('Could not persist Amber donation round-trip state:', e);
+      }
+      // Never confuse a donation resume with a symbolic-zap resume.
+      try { localStorage.removeItem(AMBER_ZAP_PENDING_KEY); } catch {}
+    }
+
+    function loadPendingDonation() {
+      let raw = null;
+      try {
+        raw = localStorage.getItem(AMBER_DONATION_PENDING_KEY);
+      } catch {}
+      if (!raw) return null;
+      const p = parseZapPending(raw, Date.now(), DONATION_PENDING_TYPE);
+      if (!p) clearPendingDonation();
+      return p;
+    }
+
+    function clearPendingDonation() {
+      try { localStorage.removeItem(AMBER_DONATION_PENDING_KEY); } catch {}
+    }
+
+    function donationWithAmber(zapReq, ctx) {
+      savePendingDonation(zapReq, ctx);
+      showDonationAmberFallback('launched');
+      applyDonationPhase('awaiting-signer', ctx.amountSats);
+      const canCallback = /^https?:$/.test(window.location.protocol);
+      const callbackUrl = canCallback
+        ? `${window.location.origin}${window.location.pathname}?donatevent=`
+        : null;
+      window.location.href = buildAmberSignerUrl(zapReq, {
+        callbackUrl,
+        appName: composeAmberAppName(state.petitionTitle)
+      });
+    }
+
+    async function completeAmberDonation(raw, pending) {
+      let signed;
+      try {
+        const decoded = await decodeAmberResult(raw);
+        signed = validateAmberZapRequest(decoded, pending);
+      } catch (err) {
+        console.warn('Amber donation signing failed:', err);
+        hideDonationAmberFallback();
+        applyDonationPhase('error', pending.amountSats);
+        const knownIds = new Set((state.zapReceipts || []).map(r => r.id));
+        renderZapSignFailure($('donation-result'), pending.sigEvent, pending.sendMsats,
+          pending.amountSats, knownIds, err.message);
+        return;
+      }
+      hideDonationAmberFallback();
+      clearPendingDonation();
+      await onDonationSigned(signed, {
+        sigEvent: pending.sigEvent,
+        sendMsats: pending.sendMsats,
+        amountSats: pending.amountSats
+      });
+    }
+
+    async function submitPastedDonation() {
+      const raw = $('donation-amber-paste').value.trim();
+      if (!raw) {
+        alert('Paste the signed zap request JSON from Amber first.');
+        return;
+      }
+      const pending = loadPendingDonation();
+      if (!pending) {
+        alert('No donation round-trip in progress — hit “Sign Zap Event” to start over.');
+        return;
+      }
+      $('donation-amber-paste-btn').disabled = true;
+      try {
+        await completeAmberDonation(raw, pending);
+      } finally {
+        $('donation-amber-paste-btn').disabled = false;
+      }
+    }
+
+    // Page-load handler for the donation round-trip. Only a query string
+    // that BEGINS with `?donatevent=` is a donation return — sign returns
+    // begin with `?event=`, connect with `?pubkey=`, and the symbolic zap
+    // with `?zapevent=`.
+    async function processAmberDonationReturn() {
+      const raw = window.location.search.startsWith('?donatevent=')
+        ? extractAmberDonationResult(window.location.href)
+        : null;
+      if (raw) {
+        history.replaceState(null, '', window.location.pathname);
+      }
+      const pending = loadPendingDonation();
+      if (!pending) {
+        if (raw) orphanDonationReturnRaw = raw;
+        return;
+      }
+      if (pending.form) restoreFormFields(pending.form);
+      if (pending.petitionEvent && pending.aTag && pending.contentHash) {
+        restorePetitionState(pending);
+      }
+      if (!state.aTag) state.aTag = pending.aTag;
+      state.pubkey = pending.sigEvent.pubkey;
+      if (IS_ANDROID && !state.nostr) state.amberConnected = true;
+      updateExtensionUI();
+      await showAlreadySigned(pending.sigEvent);
+      if (!raw) {
+        showDonationAmberFallback('restored');
+        applyDonationPhase('awaiting-signer', pending.amountSats);
+        return;
+      }
+      await completeAmberDonation(raw, pending);
+    }
+
+    // Complete a `?donatevent=` return whose pending state was lost.
+    async function completeOrphanDonationReturn(raw) {
+      if (!state.aTag) state.aTag = $('a-tag').value.trim();
+      let signed = null;
+      let failDetail = null;
+      try {
+        signed = await decodeAmberResult(raw);
+      } catch (err) {
+        failDetail = err.message;
+      }
+      if (signed) {
+        if (!state.existingSignature) {
+          failDetail = 'Amber returned a signed zap request, but your existing signature ' +
+            'could not be restored from the relays to match it against.';
+        } else {
+          const res = reconstructZapPending(signed, state.existingSignature, state.aTag,
+            DONATION_PENDING_TYPE);
+          if (res.pending) {
+            try {
+              validateAmberZapRequest(signed, res.pending);
+              hideDonationAmberFallback();
+              await onDonationSigned(signed, {
+                sigEvent: state.existingSignature,
+                sendMsats: res.pending.sendMsats,
+                amountSats: res.pending.amountSats
+              });
+              return;
+            } catch (err) {
+              failDetail = err.message;
+            }
+          } else {
+            failDetail = res.error;
+          }
+        }
+      }
+      console.warn('Orphan donation return could not be completed:', failDetail);
+      if (state.existingSignature) {
+        applyDonationPhase('error');
+        const knownIds = new Set((state.zapReceipts || []).map(r => r.id));
+        const amount = Number($('donation-amount').value) || 0;
+        renderZapSignFailure($('donation-result'), state.existingSignature,
+          amount * 1000, amount, knownIds,
+          failDetail || 'The donation round-trip state was lost — please sign the donation request again.');
+      } else {
+        alert('Amber returned a signed zap request, but the page could not resume the ' +
+          'donation flow: ' + (failDetail || 'round-trip state lost') +
+          ' — please try donating again.');
+      }
+    }
+
+    async function doDonationSign() {
+      const evt = state.existingSignature;
+      if (!evt) { alert('Sign the petition before donating.'); return; }
+      if (!state.aTag) state.aTag = $('a-tag').value.trim();
+      const parsed = parseATag(state.aTag);
+      const recipientPubkey = parsed?.pubkey;
+
+      hideDonationAmountError();
+      const input = $('donation-amount').value;
+      const parsedAmount = parseSatsInput(input);
+      if (parsedAmount.error) {
+        showDonationAmountError(parsedAmount.error);
+        return;
+      }
+      const sats = parsedAmount.sats;
+
+      let lnurl;
+      try {
+        lnurl = await resolveLnurlPay(PETITION_CONFIG.zapLnAddress);
+      } catch (err) {
+        showDonationAmountError('Could not resolve Lightning address: ' + err.message);
+        applyDonationPhase('error', sats);
+        return;
+      }
+
+      const validated = validateDonationAmount(sats, lnurl);
+      if (validated.error) {
+        showDonationAmountError(validated.error);
+        applyDonationPhase('idle', sats);
+        return;
+      }
+      const sendMsats = validated.sendMsats;
+
+      const knownIds = new Set((state.zapReceipts || []).map(r => r.id));
+      stopZapWatch();
+      hideDonationAmberFallback();
+      donationPayCtx = null;
+
+      applyDonationPhase('signing', sats);
+      $('donation-result').classList.add('hidden');
+
+      let signErr = null;
+      let signedReq = null;
+      if (!lnurl.allowsNostr || !lnurl.nostrPubkey) {
+        signErr = 'The lightning service does not support Nostr zaps ' +
+          '(missing allowsNostr/nostrPubkey), so no creditable zap receipt can be produced.';
+      } else if (state.nostr) {
+        const zapReq = buildZapRequest(evt, sendMsats, recipientPubkey || lnurl.nostrPubkey);
+        try {
+          signedReq = await robustSignEvent(zapReq);
+        } catch (e) {
+          console.warn('donation zap request sign failed:', e);
+          signErr = e.message || String(e);
+        }
+      } else if (IS_ANDROID) {
+        const zapReq = buildZapRequest(evt, sendMsats, recipientPubkey || lnurl.nostrPubkey);
+        donationWithAmber(zapReq, { sendMsats, amountSats: sats });
+        return;
+      } else {
+        signErr = 'No NIP-07 Nostr extension detected — the donation zap request cannot be signed.';
+      }
+
+      if (!signedReq) {
+        applyDonationPhase('error', sats);
+        renderZapSignFailure($('donation-result'), evt, sendMsats, sats, knownIds, signErr);
+        return;
+      }
+
+      await onDonationSigned(signedReq, { sigEvent: evt, sendMsats, amountSats: sats });
+    }
+
+    async function onDonationSigned(signed, ctx) {
+      const box = $('donation-result');
+      applyDonationPhase('fetching-invoice', ctx.amountSats);
+      box.classList.add('hidden');
+      let knownIds = new Set((state.zapReceipts || []).map(r => r.id));
+      try {
+        try {
+          const receipts = await findZapReceipts();
+          state.zapReceipts = receipts;
+          knownIds = new Set(receipts.map(r => r.id));
+        } catch (e) {
+          console.warn('donation receipt snapshot failed:', e);
+        }
+        const lnurl = await resolveLnurlPay(PETITION_CONFIG.zapLnAddress);
+        const invoice = await fetchZapInvoice(lnurl, ctx.sendMsats, JSON.stringify(signed));
+        donationPayCtx = { invoice, amountSats: ctx.amountSats, sigEvent: ctx.sigEvent, knownIds };
+        renderZapInvoicePanel(box, ctx.sigEvent, invoice, ctx.amountSats, knownIds);
+        applyDonationPhase('ready', ctx.amountSats);
+      } catch (err) {
+        applyDonationPhase('error', ctx.amountSats);
+        njumpFallback(box, ctx.sigEvent,
+          `Could not fetch the donation invoice (${err.message}). Hit “Sign Zap Event” to retry, ` +
+          `or zap your signature natively:`);
+        startZapWatch(box, knownIds);
+      }
+    }
+
+    async function doDonationPay() {
+      if (!donationPayCtx) return;
+      const { invoice } = donationPayCtx;
+      if (!(IS_ANDROID || IS_IOS) && typeof window.webln !== 'undefined') {
+        const payBtn = $('donation-pay-btn');
+        payBtn.disabled = true;
+        try {
+          await window.webln.enable();
+          await window.webln.sendPayment(invoice);
+          stopZapWatch();
+          const box = $('donation-result');
+          box.classList.remove('hidden');
+          box.innerHTML =
+            `<strong style="color:var(--green)">⚡ Zap sent — thank you!</strong>` +
+            `<div class="muted">Your donation reinforces your signature's trust score.</div>`;
+          donationPayCtx = null;
+          applyDonationPhase('paid');
+          refreshZapStatus();
+          return;
+        } catch (e) {
+          console.warn('WebLN declined/failed, falling back to lightning: URI:', e);
+          payBtn.disabled = false;
+        }
+      }
+      window.location.href = `lightning:${invoice}`;
+    }
+
     $('zap-btn').addEventListener('click', doZapSign);
     $('zap-pay-btn').addEventListener('click', doZapPay);
     $('zap-amber-paste-btn').addEventListener('click', submitPastedZap);
+    $('donation-btn').addEventListener('click', doDonationSign);
+    $('donation-pay-btn').addEventListener('click', doDonationPay);
+    $('donation-amber-paste-btn').addEventListener('click', submitPastedDonation);
     $('fetch-btn').addEventListener('click', fetchPetition);
     $('sign-btn').addEventListener('click', signAndPublish);
     $('amber-btn').addEventListener('click', signWithAmber);
@@ -2760,6 +3254,11 @@
         console.warn('Amber zap return handling failed:', e);
       }
       try {
+        await processAmberDonationReturn();
+      } catch (e) {
+        console.warn('Amber donation return handling failed:', e);
+      }
+      try {
         await processAmberReturn();
       } catch (e) {
         console.warn('Amber return handling failed:', e);
@@ -2787,6 +3286,17 @@
           console.warn('Orphan zap return handling failed:', e);
           alert('Amber returned a signed zap request, but the page could not resume ' +
             'the zap flow (' + (e?.message || 'unexpected error') + ') — please try zapping again.');
+        }
+      }
+      if (orphanDonationReturnRaw) {
+        const raw = orphanDonationReturnRaw;
+        orphanDonationReturnRaw = null;
+        try {
+          await completeOrphanDonationReturn(raw);
+        } catch (e) {
+          console.warn('Orphan donation return handling failed:', e);
+          alert('Amber returned a signed zap request, but the page could not resume ' +
+            'the donation flow (' + (e?.message || 'unexpected error') + ') — please try donating again.');
         }
       }
     })();

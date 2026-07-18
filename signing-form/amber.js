@@ -177,6 +177,23 @@ export function extractAmberZapResult(href) {
 }
 
 /**
+ * Extract the raw signer result appended to the DONATION callback URL
+ * (`...?donatevent=<result>`). The donation step (issue #32) uses its own
+ * callback parameter so a returning signed kind:9734 donation request can
+ * never be mistaken for a symbolic-zap return (`?zapevent=`), a signature
+ * return (`?event=`), or a connect return (`?pubkey=`).
+ *
+ * @param {string} href - full window.location.href
+ * @returns {string|null} raw result string, or null when absent/empty
+ */
+export function extractAmberDonationResult(href) {
+  const parts = String(href || '').split(/[?&]donatevent=/);
+  if (parts.length < 2) return null;
+  const raw = parts.slice(1).join('&donatevent=');
+  return raw.length > 0 ? raw : null;
+}
+
+/**
  * Decode a NIP-55 get_public_key result into a pubkey descriptor.
  *
  * Signers return the pubkey as a plain string — hex or npub — possibly
