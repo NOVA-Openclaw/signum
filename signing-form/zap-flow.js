@@ -281,6 +281,81 @@ export function reconstructZapPending(signed, sigEvent, aTag, type = ZAP_PENDING
 }
 
 /**
+ * Summarize the connected pubkey's completed zap payments for the
+ * donation card's payment list (issue #32 live-test finding): every
+ * kind:9735 receipt e-tagging the signature event from this pubkey is a
+ * completed payment, so repeat donations accumulate here naturally
+ * (newest first) instead of replacing each other.
+ *
+ * @param {Array} receipts - parsed receipt objects from findZapReceipts()
+ * @returns {{count:number, totalSats:number,
+ *            items:Array<{id:string,sats:number|null,created_at:number|null}>}}
+ */
+export function donationPaymentsSummary(receipts) {
+  const items = (Array.isArray(receipts) ? receipts : [])
+    .filter(r => r && typeof r === 'object' && r.id)
+    .map(r => ({
+      id: r.id,
+      sats: Number(r.sats) > 0 ? Number(r.sats) : null,
+      created_at: typeof r.created_at === 'number' ? r.created_at : null
+    }))
+    .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  const totalSats = items.reduce((s, r) => s + (r.sats || 0), 0);
+  return { count: items.length, totalSats, items };
+}
+
+/**
+ * Completion decision once a donation payment is detected (a fresh
+ * kind:9735 receipt arrives while the donation invoice is outstanding).
+ * Live-test finding on issue #32: the page detected the receipt but the
+ * "Pay Zap Invoice" button stayed active. The required behavior is a
+ * FULL form reset so another donation can follow:
+ *
+ *   - phase returns to 'idle' (Sign enabled, Pay disabled — the paid
+ *     invoice can no longer be paid again)
+ *   - the amount field is cleared and re-enabled
+ *   - the invoice context is dropped
+ *   - the pending DONATION record (and only that record — never the
+ *     symbolic-zap key) is cleared from storage
+ *   - the completed payment joins the accumulated payment list
+ *
+ * @param {Array} freshReceipts - receipts not seen before this payment
+ * @param {Array} allReceipts - every receipt from this pubkey
+ * @param {number} [fallbackSats] - amount to report when the fresh
+ *   receipts carry no parsable amount (e.g. the invoice's own amount)
+ * @returns {{paidSats:number, phase:string, resetAmount:boolean,
+ *            clearPayCtx:boolean, clearPending:boolean, payments:object}}
+ */
+export function donationPaidCompletion(freshReceipts, allReceipts, fallbackSats = 0) {
+  const fresh = Array.isArray(freshReceipts) ? freshReceipts : [];
+  const paidSats = fresh.reduce((s, r) => s + (Number(r?.sats) > 0 ? Number(r.sats) : 0), 0)
+    || (Number(fallbackSats) > 0 ? Number(fallbackSats) : 0);
+  return {
+    paidSats,
+    phase: 'idle',
+    resetAmount: true,
+    clearPayCtx: true,
+    clearPending: true,
+    payments: donationPaymentsSummary(allReceipts)
+  };
+}
+
+/**
+ * Whether the donation amount input should be locked for a given phase.
+ * Once a round-trip is in flight the entered amount is baked into the
+ * signed zap request (and then the invoice), so editing it would only
+ * desynchronize the field from what the wallet will actually pay. The
+ * field unlocks whenever a fresh donation can be started.
+ *
+ * @param {string} phase - donation state-machine phase
+ * @returns {boolean}
+ */
+export function donationAmountLocked(phase) {
+  return phase === 'signing' || phase === 'awaiting-signer' ||
+    phase === 'fetching-invoice' || phase === 'ready';
+}
+
+/**
  * The two-button Step 4 state machine (issue #42 UX spec): both buttons
  * are always visible; "Sign Zap Event" drives the signature phase and
  * "Pay Zap Invoice" stays disabled until a validated signed request has

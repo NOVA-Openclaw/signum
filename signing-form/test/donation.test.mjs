@@ -17,7 +17,10 @@ import {
   isSymbolicZapDone,
   shouldShowDonationCard,
   reconstructZapPending,
-  checkZapReturnTags
+  checkZapReturnTags,
+  donationPaymentsSummary,
+  donationPaidCompletion,
+  donationAmountLocked
 } from '../zap-flow.js';
 
 const SIG_EVENT = {
@@ -233,4 +236,87 @@ test('checkZapReturnTags works with a donation-amount pending fixture', () => {
     type: DONATION_PENDING_TYPE
   });
   assert.equal(checkZapReturnTags(signed, pending), null);
+});
+
+// ── Completed-payment list + paid-detection form reset (live-test fix) ──
+
+const SYMBOLIC_RECEIPT = { id: 'r1', sats: 21, created_at: 1752700200 };
+const DONATION_RECEIPT = { id: 'r2', sats: 5000, created_at: 1752700900 };
+const DONATION_RECEIPT_2 = { id: 'r3', sats: 1500, created_at: 1752701500 };
+
+test('donationPaymentsSummary handles empty and malformed input', () => {
+  assert.deepEqual(donationPaymentsSummary([]), { count: 0, totalSats: 0, items: [] });
+  assert.deepEqual(donationPaymentsSummary(null), { count: 0, totalSats: 0, items: [] });
+  assert.deepEqual(donationPaymentsSummary(undefined), { count: 0, totalSats: 0, items: [] });
+  // Entries without an id (unparsable receipts) are dropped, not listed.
+  const s = donationPaymentsSummary([{ sats: 99 }, null, DONATION_RECEIPT]);
+  assert.equal(s.count, 1);
+  assert.equal(s.totalSats, 5000);
+});
+
+test('donationPaymentsSummary lists payments newest first with a total', () => {
+  const s = donationPaymentsSummary([SYMBOLIC_RECEIPT, DONATION_RECEIPT_2, DONATION_RECEIPT]);
+  assert.equal(s.count, 3);
+  assert.equal(s.totalSats, 21 + 5000 + 1500);
+  assert.deepEqual(s.items.map(i => i.id), ['r3', 'r2', 'r1']);
+});
+
+test('donationPaymentsSummary keeps amountless receipts visible (sats null)', () => {
+  const s = donationPaymentsSummary([{ id: 'rx', sats: null, created_at: 1752700000 }]);
+  assert.equal(s.count, 1);
+  assert.equal(s.totalSats, 0);
+  assert.equal(s.items[0].sats, null);
+});
+
+test('paid detection resets the donation form to its initial state', () => {
+  const done = donationPaidCompletion(
+    [DONATION_RECEIPT],
+    [SYMBOLIC_RECEIPT, DONATION_RECEIPT]
+  );
+  assert.equal(done.phase, 'idle');          // Sign enabled, Pay disabled
+  assert.equal(done.resetAmount, true);      // amount field cleared/re-enabled
+  assert.equal(done.clearPayCtx, true);      // paid invoice no longer payable
+  assert.equal(done.clearPending, true);     // pending donation record cleared
+  assert.equal(done.paidSats, 5000);
+  assert.equal(done.payments.count, 2);      // completed payment is listed
+});
+
+test('paid detection falls back to the invoice amount when the receipt has none', () => {
+  const done = donationPaidCompletion(
+    [{ id: 'rx', sats: null, created_at: 1752700900 }],
+    [SYMBOLIC_RECEIPT, { id: 'rx', sats: null, created_at: 1752700900 }],
+    777
+  );
+  assert.equal(done.paidSats, 777);
+  assert.equal(done.phase, 'idle');
+});
+
+test('repeat-donation cycle: payments accumulate, each payment re-resets the form', () => {
+  // First donation completes…
+  const first = donationPaidCompletion(
+    [DONATION_RECEIPT], [SYMBOLIC_RECEIPT, DONATION_RECEIPT]);
+  assert.equal(first.phase, 'idle');
+  assert.equal(first.payments.count, 2);
+  // …the reset form allows another donation, whose receipt ACCUMULATES
+  // alongside (not replacing) the earlier payments.
+  const second = donationPaidCompletion(
+    [DONATION_RECEIPT_2],
+    [SYMBOLIC_RECEIPT, DONATION_RECEIPT, DONATION_RECEIPT_2]);
+  assert.equal(second.phase, 'idle');
+  assert.equal(second.clearPending, true);
+  assert.equal(second.paidSats, 1500);
+  assert.equal(second.payments.count, 3);
+  assert.deepEqual(second.payments.items.map(i => i.id), ['r3', 'r2', 'r1']);
+  assert.equal(second.payments.totalSats, 21 + 5000 + 1500);
+});
+
+test('donationAmountLocked locks the field only while a round-trip is in flight', () => {
+  assert.equal(donationAmountLocked('signing'), true);
+  assert.equal(donationAmountLocked('awaiting-signer'), true);
+  assert.equal(donationAmountLocked('fetching-invoice'), true);
+  assert.equal(donationAmountLocked('ready'), true);
+  assert.equal(donationAmountLocked('idle'), false);
+  assert.equal(donationAmountLocked('error'), false);
+  assert.equal(donationAmountLocked('paid'), false);
+  assert.equal(donationAmountLocked(undefined), false);
 });

@@ -551,6 +551,11 @@
       </div>
 
       <div class="result hidden" id="donation-result"></div>
+
+      <!-- Accumulated completed payments from this key (issue #32):
+           refreshed from relay zap receipts, so repeat donations stack
+           instead of replacing each other. -->
+      <div class="result hidden" id="donation-payments"></div>
     </section>
   </main>
 
@@ -565,7 +570,8 @@
       buildZapPending, parseZapPending, checkZapReturnTags,
       reconstructZapPending, zapUiState,
       DONATION_PENDING_TYPE, parseSatsInput, validateDonationAmount,
-      donationAmountBounds, isSymbolicZapDone, shouldShowDonationCard
+      donationAmountBounds, isSymbolicZapDone, shouldShowDonationCard,
+      donationPaymentsSummary, donationPaidCompletion, donationAmountLocked
     } from './zap-flow.js';
 
     const DEFAULT_RELAYS = [
@@ -1015,14 +1021,21 @@
     // Donation-card visibility helpers (issue #32).
     function showDonationCard() {
       $('donation-card').classList.remove('hidden');
-      applyDonationPhase('idle');
+      // Preserve an in-flight donation round-trip: the card is re-shown
+      // by refreshZapStatus copy updates, and resetting the phase there
+      // would cancel an active Sign → Pay cycle.
+      if (donationPhase === 'idle') applyDonationPhase('idle');
       updateDonationAmountHint();
+      renderDonationPayments(donationPaymentsSummary(state.zapReceipts || []));
     }
 
     function hideDonationCard() {
       $('donation-card').classList.add('hidden');
       applyDonationPhase('idle');
       donationPayCtx = null;
+      const payments = $('donation-payments');
+      payments.classList.add('hidden');
+      payments.innerHTML = '';
     }
 
     function hideDonationAmountError() {
@@ -2012,6 +2025,10 @@
       $('donation-pay-btn').disabled = ui.pay.disabled;
       $('donation-pay-spinner').classList.toggle('hidden', !ui.pay.spinner);
       $('donation-step-hint').textContent = ui.hint;
+      // Once the round-trip is in flight the amount is baked into the
+      // signed request/invoice — lock the field until a fresh donation
+      // can be started (issue #32 live-test follow-up).
+      $('donation-amount').disabled = donationAmountLocked(phase);
     }
 
     async function resolveLnurlPay(lnaddr) {
@@ -2148,6 +2165,11 @@
             `<strong>✅ You've already zapped this petition${total > 0 ? ': ' + label : ''}</strong>` +
             `Your symbolic zap reinforces your signature's trust score.`;
           box.classList.remove('hidden');
+          // Keep the donation card's accumulated payment list current
+          // (issue #32): repeat donations stack as receipts arrive.
+          if (!$('donation-card').classList.contains('hidden')) {
+            renderDonationPayments(donationPaymentsSummary(receipts));
+          }
           return;
         }
 
@@ -2177,7 +2199,10 @@
       if (zapWatch) { clearInterval(zapWatch.timer); zapWatch = null; }
     }
 
-    function startZapWatch(box, knownIds) {
+    // `onPaid(freshReceipts, allReceipts)` lets a caller own the payment
+    // completion (the donation step needs its own reset — issue #32
+    // live-test finding); without it the symbolic-zap completion runs.
+    function startZapWatch(box, knownIds, onPaid = null) {
       stopZapWatch();
       const deadline = Date.now() + 5 * 60 * 1000;
       const note = document.createElement('div');
@@ -2198,6 +2223,7 @@
           const fresh = receipts.filter(r => !knownIds.has(r.id));
           if (fresh.length > 0) {
             stopZapWatch();
+            if (onPaid) { onPaid(fresh, receipts); return; }
             const sats = fresh.reduce((s, r) => s + (r.sats || 0), 0) || zapAmountSats();
             box.innerHTML =
               `<strong style="color:var(--green)">⚡ Zap received — ${sats} sats. Thank you!</strong>` +
@@ -2600,7 +2626,7 @@
     // njump lane + receipt watcher. The `lightning:` handoff itself lives
     // on the “Pay Zap Invoice” button (doZapPay), so no duplicate inline
     // pay anchor is rendered here.
-    function renderZapInvoicePanel(box, evt, invoice, amount, knownIds) {
+    function renderZapInvoicePanel(box, evt, invoice, amount, knownIds, onPaid = null) {
       box.classList.remove('hidden');
       box.innerHTML = '';
       const h = document.createElement('strong');
@@ -2630,7 +2656,7 @@
       nj.textContent = 'Zap on njump ↗';
       row.appendChild(nj);
       box.appendChild(row);
-      startZapWatch(box, knownIds);
+      startZapWatch(box, knownIds, onPaid);
     }
 
     // “Pay Zap Invoice” — only live in the 'ready' phase. Desktop tries
@@ -2889,6 +2915,56 @@
         // for it so even the fallback path gets a payment acknowledgment.
         startZapWatch(box, knownIds);
       }
+    }
+
+    // Render the donation card's accumulated completed-payments list
+    // from the pubkey's zap receipts (issue #32 live-test finding): every
+    // receipt on this signature from this key is a completed payment, so
+    // repeat donations accumulate instead of replacing each other.
+    function renderDonationPayments(summary) {
+      const box = $('donation-payments');
+      if (!summary || summary.count === 0) {
+        box.classList.add('hidden');
+        box.innerHTML = '';
+        return;
+      }
+      const rows = summary.items.map(r => {
+        const amt = r.sats ? `⚡ ${r.sats} sats` : '⚡ zap received';
+        const when = r.created_at
+          ? ` — <span class="muted">${new Date(r.created_at * 1000).toLocaleString()}</span>`
+          : '';
+        return `<li>${amt}${when}</li>`;
+      }).join('');
+      box.innerHTML =
+        `<strong>Completed zaps from your key${summary.totalSats > 0 ? `: ${summary.totalSats} sats total` : ''}</strong>` +
+        `<ul style="margin:8px 0 0 18px; padding:0">${rows}</ul>`;
+      box.classList.remove('hidden');
+    }
+
+    // Donation payment detected (fresh kind:9735 receipt while the
+    // donation invoice was outstanding). Live-test finding on issue #32:
+    // the receipt was detected but "Pay Zap Invoice" stayed active. Reset
+    // the form to its initial state — list the completed payment, clear
+    // and re-enable the amount field, drop the paid invoice, and clear
+    // the pending DONATION record (only the donation key — the symbolic
+    // zap record is never touched) — so another donation can follow.
+    function onDonationPaid(freshReceipts, allReceipts) {
+      state.zapReceipts = allReceipts;
+      const fallbackSats = donationPayCtx ? donationPayCtx.amountSats : 0;
+      const done = donationPaidCompletion(freshReceipts, allReceipts, fallbackSats);
+      const box = $('donation-result');
+      box.classList.remove('hidden');
+      box.innerHTML =
+        `<strong style="color:var(--green)">⚡ Donation received${done.paidSats > 0 ? ` — ${done.paidSats} sats` : ''}. Thank you!</strong>` +
+        `<div class="muted">Your donation reinforces your signature's trust score. ` +
+        `You can make another donation any time.</div>`;
+      if (done.clearPayCtx) donationPayCtx = null;
+      if (done.clearPending) clearPendingDonation();
+      if (done.resetAmount) $('donation-amount').value = '';
+      hideDonationAmountError();
+      applyDonationPhase(done.phase);
+      renderDonationPayments(done.payments);
+      refreshZapStatus(allReceipts);
     }
 
     // ── Larger donation step (issue #32) ─────────────────────────────
@@ -3163,14 +3239,14 @@
         const lnurl = await resolveLnurlPay(PETITION_CONFIG.zapLnAddress);
         const invoice = await fetchZapInvoice(lnurl, ctx.sendMsats, JSON.stringify(signed));
         donationPayCtx = { invoice, amountSats: ctx.amountSats, sigEvent: ctx.sigEvent, knownIds };
-        renderZapInvoicePanel(box, ctx.sigEvent, invoice, ctx.amountSats, knownIds);
+        renderZapInvoicePanel(box, ctx.sigEvent, invoice, ctx.amountSats, knownIds, onDonationPaid);
         applyDonationPhase('ready', ctx.amountSats);
       } catch (err) {
         applyDonationPhase('error', ctx.amountSats);
         njumpFallback(box, ctx.sigEvent,
           `Could not fetch the donation invoice (${err.message}). Hit “Sign Zap Event” to retry, ` +
           `or zap your signature natively:`);
-        startZapWatch(box, knownIds);
+        startZapWatch(box, knownIds, onDonationPaid);
       }
     }
 
@@ -3183,14 +3259,19 @@
         try {
           await window.webln.enable();
           await window.webln.sendPayment(invoice);
-          stopZapWatch();
+          // Payment sent — reset the form so another donation can follow
+          // (issue #32 live-test finding). The receipt watcher stays
+          // running and upgrades this to the received confirmation +
+          // accumulated payment list once the zap receipt lands.
           const box = $('donation-result');
           box.classList.remove('hidden');
           box.innerHTML =
             `<strong style="color:var(--green)">⚡ Zap sent — thank you!</strong>` +
             `<div class="muted">Your donation reinforces your signature's trust score.</div>`;
           donationPayCtx = null;
-          applyDonationPhase('paid');
+          clearPendingDonation();
+          $('donation-amount').value = '';
+          applyDonationPhase('idle');
           refreshZapStatus();
           return;
         } catch (e) {
