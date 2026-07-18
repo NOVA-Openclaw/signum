@@ -236,10 +236,11 @@ export function checkZapReturnTags(signed, pending) {
  * @param {object} signed - decoded signer result
  * @param {object} sigEvent - the restored kind:1791 signature event
  * @param {string} aTag - the page's petition a-tag
+ * @param {string} [type] - pending record type ('zap' or 'donate')
  * @param {number} [now]
  * @returns {{pending: object}|{error: string}}
  */
-export function reconstructZapPending(signed, sigEvent, aTag, now = Date.now()) {
+export function reconstructZapPending(signed, sigEvent, aTag, type = ZAP_PENDING_TYPE, now = Date.now()) 
   if (!signed || typeof signed !== 'object') {
     return { error: 'No event object in the signer response.' };
   }
@@ -271,7 +272,8 @@ export function reconstructZapPending(signed, sigEvent, aTag, now = Date.now()) 
     sendMsats,
     amountSats: Math.round(sendMsats / 1000),
     sigEvent,
-    aTag
+    aTag,
+    type
   }, now);
   const err = checkZapReturnTags(signed, pending);
   if (err) return { error: err };

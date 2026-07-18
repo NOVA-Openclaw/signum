@@ -190,15 +190,24 @@ test('parseZapPending default expected type remains zap (backward compatible)', 
 
 // ── Donation orphan-return reconstruction ────────────────────────────────
 
-test('reconstructZapPending preserves donation amount from returned event', () => {
+test('reconstructZapPending preserves donation amount and type from returned event', () => {
   const signed = makeSignedZapReq({
     tags: makeUnsignedZapReq(5_000_000).tags
   });
-  const res = reconstructZapPending(signed, SIG_EVENT, A_TAG, 5000);
+  const res = reconstructZapPending(signed, SIG_EVENT, A_TAG, 5000, DONATION_PENDING_TYPE);
   assert.ok(res.pending, res.error || '');
   assert.equal(res.pending.sendMsats, 5_000_000);
   assert.equal(res.pending.amountSats, 5000);
-  assert.equal(res.pending.type, 'zap'); // reconstruction is type-agnostic
+  assert.equal(res.pending.type, 'donate');
+});
+
+test('reconstructZapPending defaults to zap type when type omitted', () => {
+  const signed = makeSignedZapReq({
+    tags: makeUnsignedZapReq(1_000_000).tags
+  });
+  const res = reconstructZapPending(signed, SIG_EVENT, A_TAG);
+  assert.ok(res.pending, res.error || '');
+  assert.equal(res.pending.type, 'zap');
 });
 
 test('reconstructZapPending rejects amount exceeding orphan sanity ceiling', () => {
@@ -206,7 +215,7 @@ test('reconstructZapPending rejects amount exceeding orphan sanity ceiling', () 
   const signed = makeSignedZapReq({
     tags: makeUnsignedZapReq(overLimit).tags
   });
-  const res = reconstructZapPending(signed, SIG_EVENT, A_TAG);
+  const res = reconstructZapPending(signed, SIG_EVENT, A_TAG, Date.now(), DONATION_PENDING_TYPE);
   assert.ok(res.error);
   assert.match(res.error, /out of range/);
 });

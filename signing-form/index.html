@@ -563,7 +563,9 @@
     } from './amber.js';
     import {
       buildZapPending, parseZapPending, checkZapReturnTags,
-      reconstructZapPending, zapUiState
+      reconstructZapPending, zapUiState,
+      DONATION_PENDING_TYPE, parseSatsInput, validateDonationAmount,
+      donationAmountBounds, isSymbolicZapDone
     } from './zap-flow.js';
 
     const DEFAULT_RELAYS = [
@@ -2563,7 +2565,7 @@
       state.pubkey = pending.sigEvent.pubkey;
       if (IS_ANDROID && !state.nostr) state.amberConnected = true;
       updateExtensionUI();
-      showAlreadySigned(pending.sigEvent);
+      await showAlreadySigned(pending.sigEvent);
       if (!raw) {
         // Round-trip in progress but no result in the URL: the user came
         // back manually (rejected, or clipboard variant). Offer the paste
