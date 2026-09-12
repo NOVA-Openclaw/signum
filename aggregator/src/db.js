@@ -53,7 +53,8 @@ export class SignumDatabase {
         author_pubkey TEXT NOT NULL,
         petition_a_tag TEXT,
         created_at INTEGER NOT NULL,
-        raw_event TEXT NOT NULL
+        raw_event TEXT NOT NULL,
+        UNIQUE(deletion_event_id, target_event_id)
       );
 
       CREATE INDEX IF NOT EXISTS idx_deletions_target ON deletions(target_event_id);
@@ -129,6 +130,52 @@ export class SignumDatabase {
     if (!zapCols.some((c) => c.name === 'sender_pubkey')) {
       this.db.exec('ALTER TABLE zap_receipts ADD COLUMN sender_pubkey TEXT');
     }
+
+    this._migrateDeletionsDedup();
+  }
+
+  /**
+   * Databases created before the deletions dedup constraint accumulated one
+   * row per (deletion event x poll cycle) — a kind:5 carrying both an `#a`
+   * and an `#e` tag matches two separate relay queries per cycle, so rows
+   * grew without bound for as long as the event stayed within the relays'
+   * retention window.
+   *
+   * Collapse existing duplicates (keeping the lowest rowid per logical
+   * deletion) and add the UNIQUE(deletion_event_id, target_event_id) index
+   * so subsequent inserts are idempotent. A multi-target kind:5 legitimately
+   * produces one row per target, so the key is the pair, not the event id.
+   */
+  _migrateDeletionsDedup() {
+    // A fresh database gets the constraint from the table definition
+    // (origin 'u'); a migrated one gets the explicit index below
+    // (origin 'c'). Either is sufficient — check for any unique index
+    // covering exactly (deletion_event_id, target_event_id).
+    const indexes = this.db.prepare('PRAGMA index_list(deletions)').all();
+    const hasUnique = indexes.some((idx) => {
+      if (idx.unique !== 1) return false;
+      const cols = this.db
+        .prepare(`PRAGMA index_info(${JSON.stringify(idx.name)})`)
+        .all()
+        .map((c) => c.name);
+      return (
+        cols.length === 2 &&
+        cols.includes('deletion_event_id') &&
+        cols.includes('target_event_id')
+      );
+    });
+    if (hasUnique) return;
+
+    this.db.exec(`
+      DELETE FROM deletions
+      WHERE id NOT IN (
+        SELECT MIN(id) FROM deletions
+        GROUP BY deletion_event_id, target_event_id
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_deletions_event_target
+        ON deletions(deletion_event_id, target_event_id);
+    `);
   }
 
   _prepareStatements() {
@@ -169,6 +216,7 @@ export class SignumDatabase {
       insertDeletion: this.db.prepare(`
         INSERT INTO deletions (deletion_event_id, target_event_id, author_pubkey, petition_a_tag, created_at, raw_event)
         VALUES (:deletion_event_id, :target_event_id, :author_pubkey, :petition_a_tag, :created_at, :raw_event)
+        ON CONFLICT(deletion_event_id, target_event_id) DO NOTHING
       `),
       findDeletion: this.db.prepare('SELECT 1 FROM deletions WHERE target_event_id = ? AND author_pubkey = ? LIMIT 1'),
       getDeletionsForPetition: this.db.prepare(`
