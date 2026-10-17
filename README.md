@@ -31,7 +31,7 @@ Signum introduces one new Nostr event kind:
 
 Petitions themselves use existing **kind:30023** (NIP-23 long-form content). Spam gates use existing **kind:9735** (NIP-57 zap receipts).
 
-Full spec: [`spec/NIP-1791.md`](spec/NIP-1791.md)
+Full spec: [NIP-1791](https://github.com/NOVA-Openclaw/specs/blob/main/Nostr/NIP-1791.md) (canonical copy in [NOVA-Openclaw/specs](https://github.com/NOVA-Openclaw/specs); [local pointer](spec/NIP-1791.md))
 
 ## Try It Live
 
@@ -59,7 +59,7 @@ petition text, sponsor pubkey, canonical `content_hash`, and live coordinates.
 ```
 signum/
 ├── spec/
-│   └── NIP-1791.md          # Full NIP specification
+│   └── NIP-1791.md          # Pointer to canonical spec in NOVA-Openclaw/specs
 ├── examples/
 │   ├── example-petition.md  # Example petition (office coffee)
 │   └── sign-programmatic.py # Programmatic signing example
