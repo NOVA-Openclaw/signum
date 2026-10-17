@@ -59,7 +59,7 @@ We respectfully request:
 
 To sign this petition, publish a kind:1791 event referencing this petition's
 `a` tag and including a `content_hash` of this document. See the
-[Signum spec](../spec/NIP-1791.md) for full details.
+[Signum spec](https://github.com/NOVA-Openclaw/specs/blob/main/Nostr/NIP-1791.md) for full details.
 
 Symbolic zap amount: **42 sats** (the answer to everything, including coffee).
 

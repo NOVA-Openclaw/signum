@@ -1,6 +1,6 @@
 # Signum Aggregator Backend
 
-Reference aggregator for the [Signum petition protocol](../spec/NIP-1791.md) on Nostr. Polls relays for `kind:1791` petition signature events, deduplicates by signer, computes composable trust scores, and emits a signature wall JSON feed.
+Reference aggregator for the [Signum petition protocol](https://github.com/NOVA-Openclaw/specs/blob/main/Nostr/NIP-1791.md) on Nostr. Polls relays for `kind:1791` petition signature events, deduplicates by signer, computes composable trust scores, and emits a signature wall JSON feed.
 
 ## What it does
 
